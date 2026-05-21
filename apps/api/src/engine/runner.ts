@@ -112,6 +112,25 @@ interface OutputNodeData {
   from?: string; // 模板字符串,如 "{{node1}}"
 }
 
+/** HTTP 节点 — 调外部 API */
+interface HttpNodeData {
+  url?: string; // 模板
+  method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  headers?: Record<string, string>;
+  body?: string; // 模板,JSON / form / 纯文本
+}
+
+/** Code 节点 — 执行 JS 片段 */
+interface CodeNodeData {
+  /** 函数体;签名 (vars) => any。可以 return Promise(会被 await) */
+  code?: string;
+}
+
+/** Input 节点 — P3 加了默认值 */
+interface InputNodeData {
+  default?: string;
+}
+
 /**
  * 执行单个节点 — 返回输出值 + 中间过程通过 yield 推 SSE 事件
  */
@@ -123,8 +142,14 @@ async function* execNode(
 
   switch (node.type) {
     case "input": {
-      // 输入节点的值已由 runner 预填到 ctx.vars[node.id]
-      const out = ctx.vars[node.id] ?? null;
+      // 优先用 inputs 字典传入的值,其次用画布上配的 default
+      const data = (node.data ?? {}) as InputNodeData;
+      const provided = ctx.vars[node.id];
+      const out =
+        provided !== undefined && provided !== null && provided !== ""
+          ? provided
+          : (data.default ?? null);
+      ctx.vars[node.id] = out; // 写回方便 LLM 引用
       yield { type: "node_end", nodeId: node.id, output: out };
       return out;
     }
@@ -164,6 +189,74 @@ async function* execNode(
 
       yield { type: "node_end", nodeId: node.id, output: accumulated };
       return accumulated;
+    }
+
+    case "http": {
+      const data = (node.data ?? {}) as HttpNodeData;
+      const url = resolveTemplate(data.url ?? "", ctx.vars);
+      if (!url) throw new Error("http node: url is required");
+      const method = data.method ?? "GET";
+      const headers: Record<string, string> = { ...(data.headers ?? {}) };
+      // 把 headers 的值也走模板
+      for (const k of Object.keys(headers)) {
+        headers[k] = resolveTemplate(headers[k] ?? "", ctx.vars);
+      }
+      const bodyTpl = data.body ?? "";
+      const body =
+        bodyTpl && method !== "GET"
+          ? resolveTemplate(bodyTpl, ctx.vars)
+          : undefined;
+
+      // body 默认带上 JSON content-type(若未显式设置)
+      if (body && !Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+        headers["content-type"] = "application/json";
+      }
+
+      const resp = await fetch(url, { method, headers, body });
+      const ct = resp.headers.get("content-type") ?? "";
+      let result: unknown;
+      if (ct.includes("application/json")) {
+        result = await resp.json().catch(() => null);
+      } else {
+        result = await resp.text();
+      }
+
+      if (!resp.ok) {
+        const preview =
+          typeof result === "string"
+            ? result.slice(0, 300)
+            : JSON.stringify(result).slice(0, 300);
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${preview}`);
+      }
+
+      yield { type: "node_end", nodeId: node.id, output: result };
+      return result;
+    }
+
+    case "code": {
+      const data = (node.data ?? {}) as CodeNodeData;
+      const code = (data.code ?? "").trim();
+      if (!code) throw new Error("code node: code is required");
+
+      // 注意:Cloudflare Workers 默认禁用动态代码执行(eval/Function),
+      // 但 wrangler 配置 nodejs_compat + globalThis 限定下,Function 构造在 Workers 环境是可用的。
+      // 用户代码以 vars 为唯一参数,strict mode,签名 (vars) => any
+      let result: unknown;
+      try {
+        // eslint-disable-next-line no-new-func
+        const fn = new Function(
+          "vars",
+          `"use strict";\nreturn (async (vars) => {\n${code}\n})(vars);`,
+        ) as (vars: Record<string, unknown>) => Promise<unknown>;
+        result = await fn(ctx.vars);
+      } catch (e) {
+        throw new Error(
+          `code node error: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+
+      yield { type: "node_end", nodeId: node.id, output: result };
+      return result;
     }
 
     default: {

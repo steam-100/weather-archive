@@ -44,8 +44,15 @@ import RunPanel from "../components/RunPanel";
 type InputData = { label?: string; default?: string };
 type LLMData = { prompt?: string; maxTokens?: number };
 type OutputData = { from?: string };
+type HttpData = {
+  url?: string;
+  method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  headers?: Record<string, string>;
+  body?: string;
+};
+type CodeData = { code?: string };
 
-type EditorNode = Node<InputData | LLMData | OutputData>;
+type EditorNode = Node<InputData | LLMData | OutputData | HttpData | CodeData>;
 
 // ─── 节点 UI 组件 ────────────────────────────────────────────────────
 
@@ -128,10 +135,66 @@ function OutputNodeView({ data, selected }: NodeProps<Node<OutputData>>) {
   );
 }
 
+function HttpNodeView({ data, selected }: NodeProps<Node<HttpData>>) {
+  const method = data.method ?? "GET";
+  const url = data.url?.trim();
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-sky-400" : "border-slate-200"}`}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={`${HANDLE_BASE} !bg-sky-400`}
+      />
+      <div className="flex items-center gap-2 text-sky-700 text-xs font-medium uppercase tracking-wide">
+        <span>🌐</span>
+        <span>HTTP</span>
+      </div>
+      <div className="mt-1 text-xs flex items-baseline gap-1.5">
+        <span className="font-mono font-semibold text-sky-700">{method}</span>
+        <span className="text-slate-700 truncate font-mono">
+          {url || <span className="italic text-slate-400">未配置 url</span>}
+        </span>
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={`${HANDLE_BASE} !bg-sky-400`}
+      />
+    </div>
+  );
+}
+
+function CodeNodeView({ data, selected }: NodeProps<Node<CodeData>>) {
+  const preview = data.code?.trim().split("\n")[0]?.slice(0, 40);
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-slate-500" : "border-slate-200"}`}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={`${HANDLE_BASE} !bg-slate-500`}
+      />
+      <div className="flex items-center gap-2 text-slate-700 text-xs font-medium uppercase tracking-wide">
+        <span>💻</span>
+        <span>Code</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-700 font-mono truncate">
+        {preview || <span className="italic text-slate-400">未配置 code</span>}
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={`${HANDLE_BASE} !bg-slate-500`}
+      />
+    </div>
+  );
+}
+
 const NODE_TYPES = {
   input: InputNodeView,
   llm: LLMNodeView,
   output: OutputNodeView,
+  http: HttpNodeView,
+  code: CodeNodeView,
 };
 
 // ─── 配置面板:右侧抽屉 ───────────────────────────────────────────────
@@ -151,6 +214,8 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
           {node.type === "input" && "📥 Input 节点"}
           {node.type === "llm" && "🤖 LLM 节点"}
           {node.type === "output" && "📤 Output 节点"}
+          {node.type === "http" && "🌐 HTTP 节点"}
+          {node.type === "code" && "💻 Code 节点"}
         </h3>
         <button
           onClick={onClose}
@@ -216,6 +281,62 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
             placeholder="{{ai}}"
             mono
           />
+        )}
+
+        {node.type === "http" && (
+          <>
+            <Field
+              label="URL(模板)"
+              hint="支持 {{nodeId}} 引用前序节点输出"
+              value={(node.data as HttpData).url ?? ""}
+              onChange={(v) => onChange(node.id, { url: v })}
+              placeholder="https://api.example.com/q?keyword={{q}}"
+              mono
+            />
+            <Select
+              label="Method"
+              value={(node.data as HttpData).method ?? "GET"}
+              onChange={(v) =>
+                onChange(node.id, { method: v as HttpData["method"] })
+              }
+              options={["GET", "POST", "PUT", "DELETE", "PATCH"]}
+            />
+            <TextArea
+              label="Body(可选,模板)"
+              hint="GET 请求会忽略 body;非 GET 时默认带 application/json"
+              value={(node.data as HttpData).body ?? ""}
+              onChange={(v) => onChange(node.id, { body: v })}
+              rows={3}
+              placeholder='{"q": "{{q}}"}'
+            />
+            <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
+              输出:JSON 自动 parse,其它走 text。后续节点可用{" "}
+              <code className="font-mono">{`{{${node.id}}}`}</code>{" "}
+              或 <code className="font-mono">{`{{${node.id}.field}}`}</code>{" "}
+              引用响应字段。
+            </p>
+          </>
+        )}
+
+        {node.type === "code" && (
+          <>
+            <TextArea
+              label="JavaScript 代码"
+              hint="参数 vars 是所有前序节点的输出字典(strict mode + async,可 await)"
+              value={(node.data as CodeData).code ?? ""}
+              onChange={(v) => onChange(node.id, { code: v })}
+              rows={10}
+              placeholder={`// 例:把 LLM 输出转大写
+return vars.ai.toUpperCase();`}
+            />
+            <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
+              函数签名:<code className="font-mono">async (vars) =&gt; any</code>
+              <br />
+              访问前序节点输出:<code className="font-mono">vars.nodeId</code>
+              <br />
+              ⚠️ 受 Workers 默认 10ms CPU 限制
+            </p>
+          </>
         )}
       </div>
 
@@ -302,6 +423,34 @@ function NumberInput({
         onChange={(e) => onChange(Number(e.target.value) || 0)}
         className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-400"
       />
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+function Select({
+  label, value, onChange, options, hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  hint?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
       {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
     </div>
   );
@@ -425,17 +574,21 @@ function EditorInner() {
 
   // 添加节点
   const addNode = useCallback(
-    (type: "input" | "llm" | "output") => {
-      const newId = (
+    (type: "input" | "llm" | "output" | "http" | "code") => {
+      const idPrefix =
         type === "input" ? "in_" :
         type === "llm" ? "ai_" :
-        "out_"
-      ) + crypto.randomUUID().slice(0, 6);
+        type === "output" ? "out_" :
+        type === "http" ? "http_" :
+        "code_";
+      const newId = idPrefix + crypto.randomUUID().slice(0, 6);
       const offset = nodes.length * 40;
-      const baseData =
+      const baseData: Record<string, unknown> =
         type === "input" ? {} :
         type === "llm" ? { prompt: "", maxTokens: 2048 } :
-        { from: "" };
+        type === "output" ? { from: "" } :
+        type === "http" ? { url: "", method: "GET" } :
+        { code: "" };
       setNodes((ns) => [
         ...ns,
         {
@@ -564,6 +717,18 @@ function EditorInner() {
             className="text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 px-2.5 py-1 rounded-md border border-amber-200 transition-colors"
           >
             📤 Output
+          </button>
+          <button
+            onClick={() => addNode("http")}
+            className="text-xs bg-sky-50 text-sky-700 hover:bg-sky-100 px-2.5 py-1 rounded-md border border-sky-200 transition-colors"
+          >
+            🌐 HTTP
+          </button>
+          <button
+            onClick={() => addNode("code")}
+            className="text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-md border border-slate-300 transition-colors"
+          >
+            💻 Code
           </button>
         </div>
       </header>
