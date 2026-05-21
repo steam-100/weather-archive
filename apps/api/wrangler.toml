@@ -14,6 +14,12 @@ compatibility_flags = ["nodejs_compat"]
 binding = "KV"
 id = "00ddcebaf41d4204a4d39dae4eda8789"
 
+# FILES — 多模态附件(图片/音频/PDF)存储
+# 单文件 ≤ 25MiB(KV value 上限);家用够
+[[kv_namespaces]]
+binding = "FILES"
+id = "094e2ddd523c47e4aca93e91ff9bc51f"
+
 # 公开变量(非敏感)
 [vars]
 LLM_BASE_URL = "https://api.minimaxi.com/anthropic"

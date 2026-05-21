@@ -14,10 +14,12 @@ import { loginRouter } from "./routes/login";
 import { workflowsRouter } from "./routes/workflows";
 import { llmRouter } from "./routes/llm";
 import { runRouter } from "./routes/run";
+import { filesRouter } from "./routes/files";
 
 export type Bindings = {
-  // KV (P1 后段才用到,先占位)
+  // KV
   KV: KVNamespace;
+  FILES: KVNamespace;
   // Public vars
   LLM_BASE_URL: string;
   LLM_DEFAULT_MODEL: string;
@@ -79,5 +81,8 @@ app.route("/api/llm", llmRouter);
 
 // 工作流执行(P2)— SSE 流式
 app.route("/api/run", runRouter);
+
+// 文件上传 / 下载(P6 多模态)
+app.route("/api/files", filesRouter);
 
 export default app;

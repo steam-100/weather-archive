@@ -93,4 +93,43 @@ export const api = {
 
   deleteWorkflow: (id: string) =>
     request<{ ok: boolean }>(`/workflows/${id}`, { method: "DELETE" }),
+
+  // ─── files(P6 多模态) ────────────────────────────────────────────
+  uploadFile: async (
+    file: File,
+  ): Promise<{
+    key: string;
+    contentType: string;
+    size: number;
+    name: string;
+  }> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await fetch(`${API_BASE}/files`, {
+      method: "POST",
+      credentials: "include",
+      body: fd, // 不要手动 set Content-Type,浏览器会带 multipart boundary
+    });
+    const text = await resp.text();
+    let data: unknown;
+    try {
+      data = text ? JSON.parse(text) : undefined;
+    } catch {
+      data = text;
+    }
+    if (!resp.ok) {
+      const msg =
+        (data as { error?: string } | undefined)?.error ?? `HTTP ${resp.status}`;
+      throw new ApiError(resp.status, msg);
+    }
+    return data as {
+      key: string;
+      contentType: string;
+      size: number;
+      name: string;
+    };
+  },
+
+  fileUrl: (key: string): string =>
+    `${API_BASE}/files/${encodeURIComponent(key)}`,
 };

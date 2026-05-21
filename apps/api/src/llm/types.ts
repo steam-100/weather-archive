@@ -1,11 +1,30 @@
 /**
  * 模型适配层 — 统一接口
- * 所有 LLM 提供商实现这套接口,供工作流引擎调用
+ * P6:ChatMessage.content 支持多模态 block 数组
  */
+
+/** 内容块 — 文本 / 图片 / 音频 */
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      /** MIME 类型,如 image/jpeg / image/png */
+      mediaType: string;
+      /** 文件二进制的 base64 编码(不含 data: 前缀) */
+      data: string;
+    }
+  | {
+      type: "audio";
+      /** MIME 类型,如 audio/mpeg / audio/wav */
+      mediaType: string;
+      /** 音频二进制的 base64 编码 */
+      data: string;
+    };
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  /** 文本(向后兼容)或多模态 block 数组 */
+  content: string | ContentBlock[];
 }
 
 export interface ChatRequest {

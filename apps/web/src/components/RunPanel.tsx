@@ -5,7 +5,9 @@
  * 输出区:每个执行过的节点一个卡片,LLM 节点实时打字机
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { NodeDef, RunStreamEvent } from "@app/shared";
+import type { NodeDef, RunStreamEvent, FileRef } from "@app/shared";
+import { isFileRef } from "@app/shared";
+import { api } from "../lib/api";
 import { streamSSE } from "../lib/sse";
 
 interface RunPanelProps {
@@ -26,27 +28,55 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
   const inputNodes = useMemo(
     () => nodes.filter((n) => n.type === "input"),
     [nodes],
-  );
-
-  const [inputs, setInputs] = useState<Record<string, string>>({});
+  );  const [inputs, setInputs] = useState<Record<string, string | FileRef>>({});
+  const [uploading, setUploading] = useState<Record<string, boolean>>({});
+  const [uploadError, setUploadError] = useState<Record<string, string>>({});
   const [running, setRunning] = useState(false);
   const [nodeStates, setNodeStates] = useState<Record<string, NodeRunState>>({});
   const [error, setError] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
 
-  // 当画布的 input 节点增减或默认值变化时,补齐 / 删除 inputs key
-  // 已有用户输入的优先保留;新增节点用其 default 字段预填
+  // 初始化 / 同步 inputs(节点增减或默认值变化时)
   useEffect(() => {
     setInputs((prev) => {
-      const next: Record<string, string> = {};
+      const next: Record<string, string | FileRef> = {};
       for (const n of inputNodes) {
-        const def = (n.data as { default?: string } | undefined)?.default ?? "";
-        next[n.id] = prev[n.id] !== undefined ? prev[n.id]! : def;
+        const data = (n.data ?? {}) as { default?: string; kind?: string };
+        const kind = data.kind ?? "text";
+        if (prev[n.id] !== undefined) {
+          next[n.id] = prev[n.id]!;
+        } else if (kind === "text") {
+          next[n.id] = data.default ?? "";
+        } else {
+          next[n.id] = ""; // 文件类型,等用户上传
+        }
       }
       return next;
     });
   }, [inputNodes]);
+
+  async function handleFileSelect(nodeId: string, file: File) {
+    setUploading((prev) => ({ ...prev, [nodeId]: true }));
+    setUploadError((prev) => ({ ...prev, [nodeId]: "" }));
+    try {
+      const r = await api.uploadFile(file);
+      const ref: FileRef = {
+        fileKey: r.key,
+        contentType: r.contentType,
+        name: r.name,
+        size: r.size,
+      };
+      setInputs((prev) => ({ ...prev, [nodeId]: ref }));
+    } catch (e) {
+      setUploadError((prev) => ({
+        ...prev,
+        [nodeId]: e instanceof Error ? e.message : "上传失败",
+      }));
+    } finally {
+      setUploading((prev) => ({ ...prev, [nodeId]: false }));
+    }
+  }
 
   async function run() {
     if (running) return;
@@ -170,24 +200,58 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
               这个工作流没有 Input 节点,运行不需要参数。
             </p>
           ) : (
-            <div className="space-y-2">
-              {inputNodes.map((n) => (
-                <div key={n.id}>
-                  <label className="block text-xs font-mono text-slate-500 mb-1">
-                    {n.id}
-                  </label>
-                  <input
-                    type="text"
-                    value={inputs[n.id] ?? ""}
-                    onChange={(e) =>
-                      setInputs((prev) => ({ ...prev, [n.id]: e.target.value }))
-                    }
-                    disabled={running}
-                    className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-100"
-                    placeholder={`输入 ${n.id} 的值`}
-                  />
-                </div>
-              ))}
+            <div className="space-y-3">
+              {inputNodes.map((n) => {
+                const data = (n.data ?? {}) as {
+                  default?: string;
+                  kind?: "text" | "image" | "audio";
+                };
+                const kind = data.kind ?? "text";
+                const v = inputs[n.id];
+                const isUploading = uploading[n.id] ?? false;
+                const upErr = uploadError[n.id];
+
+                return (
+                  <div key={n.id}>
+                    <label className="block text-xs font-mono text-slate-500 mb-1">
+                      {n.id}
+                      {kind !== "text" && (
+                        <span className="ml-1.5 text-slate-400">
+                          ({kind === "image" ? "🖼️ image" : "🎵 audio"})
+                        </span>
+                      )}
+                    </label>
+
+                    {kind === "text" ? (
+                      <input
+                        type="text"
+                        value={typeof v === "string" ? v : ""}
+                        onChange={(e) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            [n.id]: e.target.value,
+                          }))
+                        }
+                        disabled={running}
+                        className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-100"
+                        placeholder={`输入 ${n.id} 的值`}
+                      />
+                    ) : (
+                      <FilePicker
+                        accept={kind === "image" ? "image/*" : "audio/*"}
+                        value={isFileRef(v) ? v : null}
+                        uploading={isUploading}
+                        error={upErr}
+                        disabled={running}
+                        onSelect={(f) => handleFileSelect(n.id, f)}
+                        onClear={() =>
+                          setInputs((prev) => ({ ...prev, [n.id]: "" }))
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="mt-3">
@@ -255,6 +319,97 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
           </section>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── 文件选择器组件 ──────────────────────────────────────────────────
+
+interface FilePickerProps {
+  accept: string;
+  value: FileRef | null;
+  uploading: boolean;
+  error?: string;
+  disabled: boolean;
+  onSelect: (file: File) => void;
+  onClear: () => void;
+}
+
+function FilePicker({
+  accept,
+  value,
+  uploading,
+  error,
+  disabled,
+  onSelect,
+  onClear,
+}: FilePickerProps) {
+  if (uploading) {
+    return (
+      <div className="text-xs text-slate-500 italic bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
+        上传中…
+      </div>
+    );
+  }
+
+  if (value) {
+    const isImage = value.contentType.startsWith("image/");
+    const sizeKB = (value.size / 1024).toFixed(1);
+    return (
+      <div className="border border-slate-200 rounded-md p-2 bg-slate-50">
+        <div className="flex items-center gap-2 text-xs">
+          {isImage ? (
+            <img
+              src={api.fileUrl(value.fileKey)}
+              alt={value.name}
+              className="h-12 w-12 object-cover rounded border border-slate-200"
+            />
+          ) : (
+            <span className="text-2xl">🎵</span>
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="text-slate-700 truncate font-mono">
+              {value.name}
+            </div>
+            <div className="text-slate-400">
+              {value.contentType} · {sizeKB} KB
+            </div>
+          </div>
+          <button
+            onClick={onClear}
+            disabled={disabled}
+            className="text-xs text-slate-500 hover:text-red-600 underline disabled:opacity-30 px-2"
+          >
+            重选
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label
+        className={`inline-block text-xs px-3 py-1.5 rounded-md border transition-colors cursor-pointer ${
+          disabled
+            ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+        }`}
+      >
+        📎 选择文件
+        <input
+          type="file"
+          accept={accept}
+          className="hidden"
+          disabled={disabled}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onSelect(f);
+            e.currentTarget.value = ""; // 允许重选同名
+          }}
+        />
+      </label>
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
   );
 }

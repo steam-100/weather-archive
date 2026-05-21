@@ -18,9 +18,12 @@ import type {
   NodeDef,
   EdgeDef,
   RunStreamEvent,
+  FileRef,
 } from "@app/shared";
+import { isFileRef } from "@app/shared";
 import type { Bindings } from "../index";
 import { getAdapter } from "../llm";
+import type { ContentBlock } from "../llm/types";
 
 // ─── DAG 拓扑排序 ─────────────────────────────────────────────────────
 
@@ -94,6 +97,110 @@ export function resolveTemplate(
 
 // ─── 节点执行 ─────────────────────────────────────────────────────────
 
+// ─── 多模态辅助 ──────────────────────────────────────────────────────
+
+interface FileMetadata {
+  contentType: string;
+  size: number;
+  name: string;
+  uploadedAt: number;
+}
+
+/** ArrayBuffer → base64 (chunked,避免大文件爆栈) */
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + CHUNK)),
+    );
+  }
+  return btoa(binary);
+}
+
+/** 从 FILES KV 把 FileRef 加载成 ContentBlock(image / audio) */
+async function loadFileAsBlock(
+  ref: FileRef,
+  env: Bindings,
+): Promise<ContentBlock | null> {
+  const buf = await env.FILES.get(ref.fileKey, "arrayBuffer");
+  if (!buf) return null;
+  const ct = ref.contentType;
+  const kind: "image" | "audio" | null =
+    ct.startsWith("image/")
+      ? "image"
+      : ct.startsWith("audio/")
+        ? "audio"
+        : null;
+  if (!kind) return null;
+  return {
+    type: kind,
+    mediaType: ct,
+    data: arrayBufferToBase64(buf),
+  };
+}
+
+/**
+ * 构造 LLM 节点的 content:
+ *   - prompt 模板里 {{xxx}} 引用 FileRef → 收集为多模态 block
+ *   - 普通字符串引用 → 替换到文字
+ *   - 返回 string(纯文本)或 ContentBlock[](多模态)
+ */
+async function buildLLMContent(
+  template: string,
+  vars: Record<string, unknown>,
+  env: Bindings,
+): Promise<string | ContentBlock[]> {
+  // 1. 扫描收集所有文件引用(去重)
+  const seenKeys = new Set<string>();
+  const fileRefs: FileRef[] = [];
+  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
+  for (const m of template.matchAll(re)) {
+    const rootKey = m[1]!.trim().split(".")[0]!;
+    const v = vars[rootKey];
+    if (isFileRef(v) && !seenKeys.has(v.fileKey)) {
+      seenKeys.add(v.fileKey);
+      fileRefs.push(v);
+    }
+  }
+
+  // 2. 文本替换(file ref 处替换为可读占位 [文件:name])
+  const text = template.replace(re, (_, expr: string) => {
+    const path = expr.trim().split(".");
+    const rootKey = path[0]!;
+    const v = vars[rootKey];
+    if (isFileRef(v)) return `[文件:${v.name}]`;
+    let cur: unknown = vars;
+    for (const seg of path) {
+      if (
+        cur !== null &&
+        typeof cur === "object" &&
+        seg in (cur as Record<string, unknown>)
+      ) {
+        cur = (cur as Record<string, unknown>)[seg];
+      } else {
+        return "";
+      }
+    }
+    if (cur === null || cur === undefined) return "";
+    return typeof cur === "string" ? cur : JSON.stringify(cur);
+  });
+
+  // 3. 没有文件引用 → 直接返回字符串
+  if (fileRefs.length === 0) return text;
+
+  // 4. 加载文件 → 拼 content blocks
+  const fileBlocks: ContentBlock[] = [];
+  for (const ref of fileRefs) {
+    const block = await loadFileAsBlock(ref, env);
+    if (block) fileBlocks.push(block);
+  }
+
+  return [{ type: "text", text }, ...fileBlocks];
+}
+
 interface ExecContext {
   vars: Record<string, unknown>;
   env: Bindings;
@@ -163,7 +270,12 @@ async function* execNode(
 
     case "llm": {
       const data = (node.data ?? {}) as LLMNodeData;
-      const prompt = resolveTemplate(data.prompt ?? "", ctx.vars);
+      // 多模态:把 prompt 模板 + ctx.vars 里的 FileRef 拼成 content blocks
+      const content = await buildLLMContent(
+        data.prompt ?? "",
+        ctx.vars,
+        ctx.env,
+      );
       const system = data.system
         ? resolveTemplate(data.system, ctx.vars)
         : undefined;
@@ -173,7 +285,7 @@ async function* execNode(
 
       for await (const chunk of adapter.stream({
         model: data.model ?? ctx.env.LLM_DEFAULT_MODEL,
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content }],
         ...(system ? { system } : {}),
         maxTokens: data.maxTokens ?? 2048,
       })) {

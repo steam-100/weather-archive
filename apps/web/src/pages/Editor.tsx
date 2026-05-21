@@ -41,8 +41,13 @@ import RunPanel from "../components/RunPanel";
 
 // ─── 节点 data 类型 ──────────────────────────────────────────────────
 
-type InputData = { label?: string; default?: string };
-type LLMData = { prompt?: string; maxTokens?: number };
+type InputData = {
+  label?: string;
+  default?: string;
+  /** 输入类型 — text 默认;image/audio 运行时由 RunPanel 上传文件 */
+  kind?: "text" | "image" | "audio";
+};
+type LLMData = { prompt?: string; maxTokens?: number; model?: string };
 type OutputData = { from?: string };
 type HttpData = {
   url?: string;
@@ -60,12 +65,15 @@ const NODE_BOX = "px-4 py-3 rounded-lg shadow-sm bg-white border-2 min-w-[180px]
 const HANDLE_BASE = "!border-2 !border-white !w-3 !h-3";
 
 function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
-  const preview = data.default?.trim();
+  const kind = data.kind ?? "text";
+  const icon = kind === "image" ? "🖼️" : kind === "audio" ? "🎵" : "📥";
+  const label = kind === "image" ? "Image" : kind === "audio" ? "Audio" : "Input";
+  const preview = kind === "text" ? data.default?.trim() : null;
   return (
     <div className={`${NODE_BOX} ${selected ? "border-emerald-400" : "border-slate-200"}`}>
       <div className="flex items-center gap-2 text-emerald-700 text-xs font-medium uppercase tracking-wide">
-        <span>📥</span>
-        <span>Input</span>
+        <span>{icon}</span>
+        <span>{label}</span>
       </div>
       <div className="mt-1 text-xs text-slate-500 font-mono truncate">{id}</div>
       {preview && (
@@ -78,6 +86,9 @@ function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
         >
           “{preview}”
         </div>
+      )}
+      {kind !== "text" && (
+        <div className="mt-1 text-xs text-slate-400 italic">运行时上传</div>
       )}
       <Handle
         type="source"
@@ -236,14 +247,33 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
 
         {node.type === "input" && (
           <>
-            <TextArea
-              label="默认值(可选)"
-              hint="运行时 RunPanel 会用这个值预填输入框;LLM 引用 {{nodeId}} 时也用此值。"
-              value={(node.data as InputData).default ?? ""}
-              onChange={(v) => onChange(node.id, { default: v })}
-              rows={4}
-              placeholder="例:今天天气怎么样?"
+            <Select
+              label="输入类型"
+              value={(node.data as InputData).kind ?? "text"}
+              onChange={(v) =>
+                onChange(node.id, { kind: v as InputData["kind"] })
+              }
+              options={["text", "image", "audio"]}
+              hint="image/audio 类型,运行时由 RunPanel 上传文件"
             />
+            {((node.data as InputData).kind ?? "text") === "text" && (
+              <TextArea
+                label="默认值(可选)"
+                hint="运行时 RunPanel 会用这个值预填输入框"
+                value={(node.data as InputData).default ?? ""}
+                onChange={(v) => onChange(node.id, { default: v })}
+                rows={4}
+                placeholder="例:今天天气怎么样?"
+              />
+            )}
+            {((node.data as InputData).kind === "image" ||
+              (node.data as InputData).kind === "audio") && (
+              <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
+                运行时,RunPanel 会显示文件选择按钮。
+                {(node.data as InputData).kind === "audio" &&
+                  " ⚠️ 音频走 LLM 多模态(模型需支持 audio block)。"}
+              </p>
+            )}
             <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
               其它 LLM 节点引用方式:
               <code className="block mt-1 text-slate-700 font-mono break-all">
@@ -257,11 +287,19 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
           <>
             <TextArea
               label="Prompt 模板"
-              hint="支持 {{nodeId}} 引用前序节点的输出"
+              hint="支持 {{nodeId}} 引用前序节点的输出(图片/音频自动作为 multimodal block)"
               value={(node.data as LLMData).prompt ?? ""}
               onChange={(v) => onChange(node.id, { prompt: v })}
               rows={6}
               placeholder="例:用一句话回答:{{q}}"
+            />
+            <Field
+              label="模型(可选)"
+              hint="留空走默认。视觉模型如 MiniMax-VL-01;不同节点可用不同模型"
+              value={(node.data as LLMData).model ?? ""}
+              onChange={(v) => onChange(node.id, { model: v })}
+              placeholder="MiniMax-VL-01"
+              mono
             />
             <NumberInput
               label="Max Tokens"

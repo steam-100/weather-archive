@@ -50,3 +50,28 @@ export interface WorkflowSummary {
   description?: string;
   updatedAt: number;
 }
+
+/**
+ * 文件引用 — Input 节点的 image / audio 输入运行时是这种形态
+ * 文件本体存在 FILES KV 里,前端用 GET /api/files/:fileKey 取
+ */
+export interface FileRef {
+  /** KV key */
+  fileKey: string;
+  /** MIME 类型,如 image/jpeg / audio/mpeg */
+  contentType: string;
+  /** 原始文件名(展示用) */
+  name: string;
+  /** 字节数 */
+  size: number;
+}
+
+/** 判断一个值是不是 FileRef */
+export function isFileRef(v: unknown): v is FileRef {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof (v as { fileKey?: unknown }).fileKey === "string" &&
+    typeof (v as { contentType?: unknown }).contentType === "string"
+  );
+}

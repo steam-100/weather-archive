@@ -11,6 +11,7 @@ import type {
   LLMAdapter,
   ChatRequest,
   ChatStreamChunk,
+  ContentBlock,
 } from "./types";
 
 export interface MiniMaxConfig {
@@ -19,11 +20,48 @@ export interface MiniMaxConfig {
   defaultModel: string;
 }
 
+/** Anthropic content block 输出格式(API 实际要的) */
+type AnthropicContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      source: { type: "base64"; media_type: string; data: string };
+    }
+  | {
+      // MiniMax 兼容协议下的音频 block;不通则降级到 text 占位
+      type: "audio";
+      source: { type: "base64"; media_type: string; data: string };
+    };
+
+/** 把统一 ContentBlock 转 Anthropic 格式 */
+function toAnthropicContent(
+  content: string | ContentBlock[],
+): string | AnthropicContentBlock[] {
+  if (typeof content === "string") return content;
+  return content.map((b): AnthropicContentBlock => {
+    if (b.type === "text") return { type: "text", text: b.text };
+    if (b.type === "image") {
+      return {
+        type: "image",
+        source: { type: "base64", media_type: b.mediaType, data: b.data },
+      };
+    }
+    // audio — Anthropic 标准协议无,作为兼容尝试 MiniMax 扩展
+    return {
+      type: "audio",
+      source: { type: "base64", media_type: b.mediaType, data: b.data },
+    };
+  });
+}
+
 /** Anthropic Messages 请求体 */
 interface AnthropicMessagesBody {
   model: string;
   max_tokens: number;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: {
+    role: "user" | "assistant";
+    content: string | AnthropicContentBlock[];
+  }[];
   system?: string;
   temperature?: number;
   stream?: boolean;
@@ -37,12 +75,23 @@ function buildBody(
 ): AnthropicMessagesBody {
   // 把 system 角色单独提出(Anthropic 协议要求 system 与 messages 分离)
   let system = req.system;
-  const messages: { role: "user" | "assistant"; content: string }[] = [];
+  const messages: AnthropicMessagesBody["messages"] = [];
   for (const m of req.messages) {
     if (m.role === "system") {
-      system = (system ? system + "\n\n" : "") + m.content;
+      // system 块只支持纯字符串拼接(忽略多模态 system 场景,家用够)
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content
+              .filter((b) => b.type === "text")
+              .map((b) => (b as { text: string }).text)
+              .join("");
+      system = (system ? system + "\n\n" : "") + text;
     } else {
-      messages.push({ role: m.role, content: m.content });
+      messages.push({
+        role: m.role,
+        content: toAnthropicContent(m.content),
+      });
     }
   }
   const body: AnthropicMessagesBody = {
