@@ -12,6 +12,7 @@ import { authGuard } from "./auth";
 import { loginRouter } from "./routes/login";
 import { workflowsRouter } from "./routes/workflows";
 import { llmRouter } from "./routes/llm";
+import { runRouter } from "./routes/run";
 
 export type Bindings = {
   // KV (P1 后段才用到,先占位)
@@ -52,5 +53,8 @@ app.route("/api/workflows", workflowsRouter);
 
 // 模型连通性测试(P1 收尾;P2 会有真正的 /api/run 工作流执行)
 app.route("/api/llm", llmRouter);
+
+// 工作流执行(P2)— SSE 流式
+app.route("/api/run", runRouter);
 
 export default app;
