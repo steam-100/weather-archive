@@ -16,6 +16,7 @@ import type {
 
 export interface MiniMaxConfig {
   apiKey: string;
+  apiKeyFallback?: string;
   baseUrl: string;
   defaultModel: string;
 }
@@ -105,28 +106,56 @@ function buildBody(
   return body;
 }
 
-/** 通用 fetch,失败时抛带状态码和错误内容的异常 */
+/** 通用 fetch — key 列表 fallback;失败时切下一个再试 */
 async function callMessages(
   cfg: MiniMaxConfig,
   body: AnthropicMessagesBody,
 ): Promise<Response> {
   const url = `${cfg.baseUrl.replace(/\/$/, "")}/v1/messages`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      // 双 header 兼容(Anthropic 用 x-api-key,部分代理用 Authorization)
-      authorization: `Bearer ${cfg.apiKey}`,
-      "x-api-key": cfg.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`LLM ${resp.status} ${resp.statusText}: ${text.slice(0, 500)}`);
+  const keys = [cfg.apiKey, cfg.apiKeyFallback].filter(
+    (k): k is string => !!k,
+  );
+  if (keys.length === 0) throw new Error("no LLM_API_KEY configured");
+
+  let lastErr: Error = new Error("no attempt");
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          // 双 header 兼容(Anthropic 用 x-api-key,部分代理用 Authorization)
+          authorization: `Bearer ${keys[i]}`,
+          "x-api-key": keys[i]!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) return resp;
+      // 失败:account/quota 类切下一个
+      const isFallback =
+        resp.status === 401 ||
+        resp.status === 403 ||
+        resp.status === 429 ||
+        resp.status >= 500;
+      const text = await resp.text().catch(() => "");
+      const err = new Error(
+        `LLM ${resp.status} ${resp.statusText} (key #${i + 1}): ${text.slice(0, 400)}`,
+      );
+      if (isFallback && i < keys.length - 1) {
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    } catch (e) {
+      if (i < keys.length - 1) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        continue;
+      }
+      throw e;
+    }
   }
-  return resp;
+  throw lastErr;
 }
 
 /** 一次性返回响应中的文本(取所有 content[type=text].text 拼接) */

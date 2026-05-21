@@ -25,6 +25,8 @@ export type Bindings = {
   LLM_DEFAULT_MODEL: string;
   // Secrets — wrangler secret put
   LLM_API_KEY: string;
+  /** 兜底 key — 主 key 失败(401/429/quota)时自动切到这个;可选 */
+  LLM_API_KEY_FALLBACK?: string;
   PASSCODE_HASH: string;
   JWT_SECRET: string;
 };

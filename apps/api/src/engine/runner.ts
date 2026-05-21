@@ -210,24 +210,96 @@ async function buildLLMContent(
 
 const MiniMax_BASE = "https://api.minimaxi.com";
 
-/** Bearer 认证 + JSON 的统一 fetch helper */
-async function MiniMaxFetch<T>(
+/** 收集所有可用 key — 主 key + 兜底 key(若配置),按优先级顺序 */
+function collectKeys(env: Bindings): string[] {
+  const keys: string[] = [];
+  if (env.LLM_API_KEY) keys.push(env.LLM_API_KEY);
+  if (env.LLM_API_KEY_FALLBACK) keys.push(env.LLM_API_KEY_FALLBACK);
+  return keys;
+}
+
+/** MiniMax base_resp 里"账号类"错误码 → 应切兜底 key 重试 */
+const ACCOUNT_LEVEL_STATUS = new Set<number>([
+  1004, // invalid key
+  1008, // 余额不足
+  1011, // 配额限制
+  1013, // 触发频控
+  1027, // 调用频率超限
+  1039, // 触发 RPM 限流
+]);
+
+/** HTTP 状态码 → 应切兜底 key 重试(quota/key 类) */
+function isHttpFallbackStatus(status: number): boolean {
+  return (
+    status === 401 ||
+    status === 403 ||
+    status === 429 ||
+    status >= 500
+  );
+}
+
+/** Bearer 认证 + JSON 的统一 fetch helper(带 key fallback) */
+export async function MiniMaxFetch<T>(
   env: Bindings,
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const keys = collectKeys(env);
+  if (keys.length === 0) throw new Error("no LLM_API_KEY configured");
+
   const url = path.startsWith("http") ? path : `${MiniMax_BASE}${path}`;
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${env.LLM_API_KEY}`);
-  if (init.body && !headers.has("content-type") && typeof init.body === "string") {
-    headers.set("content-type", "application/json");
+  let lastErr: Error = new Error("no attempt");
+
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i]!;
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${key}`);
+    if (init.body && !headers.has("content-type") && typeof init.body === "string") {
+      headers.set("content-type", "application/json");
+    }
+
+    try {
+      const resp = await fetch(url, { ...init, headers });
+
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        const err = new Error(
+          `MiniMax HTTP ${resp.status} (key #${i + 1}): ${t.slice(0, 300)}`,
+        );
+        if (isHttpFallbackStatus(resp.status) && i < keys.length - 1) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+
+      // MiniMax 部分 API 用 base_resp 报账号类错误,HTTP 仍是 200
+      const json = (await resp.json()) as T & {
+        base_resp?: { status_code?: number; status_msg?: string };
+      };
+      const status = json?.base_resp?.status_code;
+      if (status !== undefined && status !== 0) {
+        const msg = json.base_resp?.status_msg ?? "";
+        const err = new Error(
+          `MiniMax base_resp.status_code=${status} (key #${i + 1}): ${msg}`,
+        );
+        if (ACCOUNT_LEVEL_STATUS.has(status) && i < keys.length - 1) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+      return json;
+    } catch (e) {
+      // 网络异常 / fetch 抛错 → 切下一个
+      if (i < keys.length - 1) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        continue;
+      }
+      throw e;
+    }
   }
-  const resp = await fetch(url, { ...init, headers });
-  if (!resp.ok) {
-    const t = await resp.text().catch(() => "");
-    throw new Error(`MiniMax ${resp.status}: ${t.slice(0, 400)}`);
-  }
-  return (await resp.json()) as T;
+  throw lastErr;
 }
 
 /** 把我们 KV 里的文件中转上传到 MiniMax 文件管理,返回 file_id */
@@ -238,25 +310,60 @@ async function uploadToMiniMax(
 ): Promise<number> {
   const buf = await env.FILES.get(fileRef.fileKey, "arrayBuffer");
   if (!buf) throw new Error(`file not found: ${fileRef.fileKey}`);
-  const fd = new FormData();
-  fd.append("purpose", purpose);
-  fd.append(
-    "file",
-    new Blob([buf], { type: fileRef.contentType }),
-    fileRef.name,
-  );
-  const resp = await fetch(`${MiniMax_BASE}/v1/files/upload`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.LLM_API_KEY}` },
-    body: fd,
-  });
-  if (!resp.ok) {
-    const t = await resp.text().catch(() => "");
-    throw new Error(`MiniMax upload ${resp.status}: ${t.slice(0, 300)}`);
+
+  const keys = collectKeys(env);
+  if (keys.length === 0) throw new Error("no LLM_API_KEY configured");
+
+  let lastErr: Error = new Error("no attempt");
+  for (let i = 0; i < keys.length; i++) {
+    const fd = new FormData();
+    fd.append("purpose", purpose);
+    fd.append(
+      "file",
+      new Blob([buf], { type: fileRef.contentType }),
+      fileRef.name,
+    );
+    try {
+      const resp = await fetch(`${MiniMax_BASE}/v1/files/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys[i]}` },
+        body: fd,
+      });
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        const err = new Error(
+          `MiniMax upload ${resp.status} (key #${i + 1}): ${t.slice(0, 300)}`,
+        );
+        if (isHttpFallbackStatus(resp.status) && i < keys.length - 1) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+      const data = (await resp.json()) as {
+        file?: { file_id?: number };
+        base_resp?: { status_code?: number };
+      };
+      if (data.base_resp?.status_code && data.base_resp.status_code !== 0) {
+        if (
+          ACCOUNT_LEVEL_STATUS.has(data.base_resp.status_code) &&
+          i < keys.length - 1
+        ) {
+          lastErr = new Error(`MiniMax upload base_resp=${data.base_resp.status_code}`);
+          continue;
+        }
+      }
+      if (!data.file?.file_id) throw new Error("MiniMax upload: no file_id");
+      return data.file.file_id;
+    } catch (e) {
+      if (i < keys.length - 1) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        continue;
+      }
+      throw e;
+    }
   }
-  const data = (await resp.json()) as { file?: { file_id?: number } };
-  if (!data.file?.file_id) throw new Error("MiniMax upload: no file_id");
-  return data.file.file_id;
+  throw lastErr;
 }
 
 /** KV 里的图片 → base64 data URL(给 i2i/i2v 用) */

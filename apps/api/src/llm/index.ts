@@ -7,6 +7,7 @@ import { createMiniMaxAdapter } from "./MiniMax";
 
 export interface LLMEnv {
   LLM_API_KEY: string;
+  LLM_API_KEY_FALLBACK?: string;
   LLM_BASE_URL: string;
   LLM_DEFAULT_MODEL: string;
 }
@@ -16,6 +17,7 @@ export function getAdapter(provider: string, env: LLMEnv): LLMAdapter {
     case "MiniMax":
       return createMiniMaxAdapter({
         apiKey: env.LLM_API_KEY,
+        apiKeyFallback: env.LLM_API_KEY_FALLBACK,
         baseUrl: env.LLM_BASE_URL,
         defaultModel: env.LLM_DEFAULT_MODEL,
       });
