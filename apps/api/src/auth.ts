@@ -94,12 +94,13 @@ export async function issueToken(
     "HS256",
   );
 
-  // dev (http) 时不能加 Secure,否则浏览器拒存
+  // dev (http) 时不能加 Secure,且只能 Lax(浏览器拒绝 None+非 Secure)
+  // 生产 (https) 跨域(Pages → Workers)需要 None + Secure 才能携带 cookie
   const isHttps = c.req.url.startsWith("https://");
 
   setCookie(c, COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: "Lax",
+    sameSite: isHttps ? "None" : "Lax",
     secure: isHttps,
     path: "/",
     maxAge: TOKEN_TTL_SECONDS,

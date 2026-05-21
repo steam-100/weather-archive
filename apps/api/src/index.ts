@@ -8,6 +8,7 @@
  *           TODO P2: POST /api/run  (SSE 流式)
  */
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { authGuard } from "./auth";
 import { loginRouter } from "./routes/login";
 import { workflowsRouter } from "./routes/workflows";
@@ -33,6 +34,28 @@ export type Variables = {
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 // ─── 中间件 ───────────────────────────────────────────────────────────
+// CORS — 允许 Pages 域名 + localhost dev,带 cookie
+app.use(
+  "/api/*",
+  cors({
+    origin: (origin) => {
+      if (!origin) return "";
+      // 任意 *.pages.dev 子域 + localhost(dev)
+      if (origin.endsWith(".pages.dev")) return origin;
+      if (
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("http://127.0.0.1:")
+      ) {
+        return origin;
+      }
+      return "";
+    },
+    credentials: true,
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type"],
+  }),
+);
+
 // authGuard 内部已对公开路径白名单放行,所以可以全局挂
 app.use("/api/*", authGuard);
 
