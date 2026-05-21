@@ -44,8 +44,8 @@ import RunPanel from "../components/RunPanel";
 type InputData = {
   label?: string;
   default?: string;
-  /** 输入类型 — text 默认;image/audio 运行时由 RunPanel 上传文件 */
-  kind?: "text" | "image" | "audio";
+  /** 输入类型 — text 默认;image 给 I2V/图片节点用 */
+  kind?: "text" | "image";
 };
 type LLMData = { prompt?: string; maxTokens?: number; model?: string };
 type OutputData = { from?: string };
@@ -66,8 +66,8 @@ const HANDLE_BASE = "!border-2 !border-white !w-3 !h-3";
 
 function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
   const kind = data.kind ?? "text";
-  const icon = kind === "image" ? "🖼️" : kind === "audio" ? "🎵" : "📥";
-  const label = kind === "image" ? "Image" : kind === "audio" ? "Audio" : "Input";
+  const icon = kind === "image" ? "🖼️" : "📥";
+  const label = kind === "image" ? "Image" : "Input";
   const preview = kind === "text" ? data.default?.trim() : null;
   return (
     <div className={`${NODE_BOX} ${selected ? "border-emerald-400" : "border-slate-200"}`}>
@@ -87,7 +87,7 @@ function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
           “{preview}”
         </div>
       )}
-      {kind !== "text" && (
+      {kind === "image" && (
         <div className="mt-1 text-xs text-slate-400 italic">运行时上传</div>
       )}
       <Handle
@@ -253,8 +253,8 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
               onChange={(v) =>
                 onChange(node.id, { kind: v as InputData["kind"] })
               }
-              options={["text", "image", "audio"]}
-              hint="image/audio 类型,运行时由 RunPanel 上传文件"
+              options={["text", "image"]}
+              hint="image 类型由 RunPanel 上传文件,给 I2V 节点用"
             />
             {((node.data as InputData).kind ?? "text") === "text" && (
               <TextArea
@@ -266,16 +266,13 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
                 placeholder="例:今天天气怎么样?"
               />
             )}
-            {((node.data as InputData).kind === "image" ||
-              (node.data as InputData).kind === "audio") && (
+            {(node.data as InputData).kind === "image" && (
               <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
-                运行时,RunPanel 会显示文件选择按钮。
-                {(node.data as InputData).kind === "audio" &&
-                  " ⚠️ 音频走 LLM 多模态(模型需支持 audio block)。"}
+                运行时,RunPanel 会显示文件选择按钮(JPG/PNG/WebP,&lt;20MB)。
               </p>
             )}
             <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
-              其它 LLM 节点引用方式:
+              其它节点引用方式:
               <code className="block mt-1 text-slate-700 font-mono break-all">
                 {`{{${node.id}}}`}
               </code>
@@ -287,7 +284,7 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
           <>
             <TextArea
               label="Prompt 模板"
-              hint="支持 {{nodeId}} 引用前序节点的输出(图片/音频自动作为 multimodal block)"
+              hint="支持 {{nodeId}} 引用前序节点的输出(图片节点会显示为 [文件:name] 占位)"
               value={(node.data as LLMData).prompt ?? ""}
               onChange={(v) => onChange(node.id, { prompt: v })}
               rows={6}
@@ -295,10 +292,10 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
             />
             <Field
               label="模型(可选)"
-              hint="留空走默认。视觉模型如 MiniMax-VL-01;不同节点可用不同模型"
+              hint="MiniMax 文本模型,留空走默认 MiniMax-M2.7"
               value={(node.data as LLMData).model ?? ""}
               onChange={(v) => onChange(node.id, { model: v })}
-              placeholder="MiniMax-VL-01"
+              placeholder="MiniMax-M2.7-highspeed"
               mono
             />
             <NumberInput

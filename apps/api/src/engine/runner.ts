@@ -64,13 +64,15 @@ export function topoSort(nodes: NodeDef[], edges: EdgeDef[]): string[] {
   return order;
 }
 
-// ─── 变量替换 ─────────────────────────────────────────────────────────
+// ─── 模板替换 ─────────────────────────────────────────────────────────
 
 /**
  * 解析模板 — {{path.to.value}} 替换为 vars 里对应的内容
  * 路径不存在时返回空字符串(温和降级,不报错)
  *
  * 例:resolveTemplate("Hello {{user.name}}", { user: { name: "World" } }) → "Hello World"
+ *
+ * 特殊处理:vars[key] 是 FileRef 时,替换为 [文件:name] 占位(便于阅读)
  */
 export function resolveTemplate(
   template: string,
@@ -78,6 +80,9 @@ export function resolveTemplate(
 ): string {
   return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, expr: string) => {
     const path = expr.trim().split(".");
+    const rootKey = path[0]!;
+    const v = vars[rootKey];
+    if (isFileRef(v)) return `[文件:${v.name}]`;
     let cur: unknown = vars;
     for (const segment of path) {
       if (
@@ -270,12 +275,9 @@ async function* execNode(
 
     case "llm": {
       const data = (node.data ?? {}) as LLMNodeData;
-      // 多模态:把 prompt 模板 + ctx.vars 里的 FileRef 拼成 content blocks
-      const content = await buildLLMContent(
-        data.prompt ?? "",
-        ctx.vars,
-        ctx.env,
-      );
+      // MiniMax Anthropic 兼容端点不支持 image/document content block,
+      // 所以遇到 FileRef 引用时,在文本中以 [文件:name] 占位代替(不 inline)
+      const prompt = resolveTemplate(data.prompt ?? "", ctx.vars);
       const system = data.system
         ? resolveTemplate(data.system, ctx.vars)
         : undefined;
@@ -285,7 +287,7 @@ async function* execNode(
 
       for await (const chunk of adapter.stream({
         model: data.model ?? ctx.env.LLM_DEFAULT_MODEL,
-        messages: [{ role: "user", content }],
+        messages: [{ role: "user", content: prompt }],
         ...(system ? { system } : {}),
         maxTokens: data.maxTokens ?? 2048,
       })) {

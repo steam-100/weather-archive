@@ -204,7 +204,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
               {inputNodes.map((n) => {
                 const data = (n.data ?? {}) as {
                   default?: string;
-                  kind?: "text" | "image" | "audio";
+                  kind?: "text" | "image";
                 };
                 const kind = data.kind ?? "text";
                 const v = inputs[n.id];
@@ -215,10 +215,8 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                   <div key={n.id}>
                     <label className="block text-xs font-mono text-slate-500 mb-1">
                       {n.id}
-                      {kind !== "text" && (
-                        <span className="ml-1.5 text-slate-400">
-                          ({kind === "image" ? "🖼️ image" : "🎵 audio"})
-                        </span>
+                      {kind === "image" && (
+                        <span className="ml-1.5 text-slate-400">(🖼️ image)</span>
                       )}
                     </label>
 
@@ -238,7 +236,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                       />
                     ) : (
                       <FilePicker
-                        accept={kind === "image" ? "image/*" : "audio/*"}
+                        accept="image/*"
                         value={isFileRef(v) ? v : null}
                         uploading={isUploading}
                         error={upErr}
