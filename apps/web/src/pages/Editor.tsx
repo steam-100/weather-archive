@@ -1,0 +1,623 @@
+/**
+ * 工作流画布编辑器 — /#/x9f3a/wf/:id
+ *
+ * 功能:
+ *   - React Flow 画布(拖拽节点 + 连线)
+ *   - 3 种节点(input/llm/output),各有配色 + 图标
+ *   - 工具栏:返回列表 / 重命名 / 添加节点 / 保存状态
+ *   - 选中节点 → 右侧配置面板(prompt/from 等编辑)
+ *   - Debounced 自动保存(1.5s)
+ *
+ * P3-C 范围;运行(/api/run SSE)放 P3-D
+ */
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  Background,
+  Controls,
+  Handle,
+  Position,
+  MarkerType,
+  type Node,
+  type Edge,
+  type Connection,
+  type NodeProps,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import type { WorkflowDef, NodeDef, EdgeDef } from "@app/shared";
+import { api, ApiError } from "../lib/api";
+import RunPanel from "../components/RunPanel";
+
+// ─── 节点 data 类型 ──────────────────────────────────────────────────
+
+type InputData = { label?: string; default?: string };
+type LLMData = { prompt?: string; maxTokens?: number };
+type OutputData = { from?: string };
+
+type EditorNode = Node<InputData | LLMData | OutputData>;
+
+// ─── 节点 UI 组件 ────────────────────────────────────────────────────
+
+const NODE_BOX = "px-4 py-3 rounded-lg shadow-sm bg-white border-2 min-w-[180px] max-w-[260px]";
+const HANDLE_BASE = "!border-2 !border-white !w-3 !h-3";
+
+function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
+  const preview = data.default?.trim();
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-emerald-400" : "border-slate-200"}`}>
+      <div className="flex items-center gap-2 text-emerald-700 text-xs font-medium uppercase tracking-wide">
+        <span>📥</span>
+        <span>Input</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-500 font-mono truncate">{id}</div>
+      {preview && (
+        <div
+          className="mt-1 text-xs text-slate-600 break-words"
+          style={{
+            display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}
+        >
+          “{preview}”
+        </div>
+      )}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={`${HANDLE_BASE} !bg-emerald-400`}
+      />
+    </div>
+  );
+}
+
+function LLMNodeView({ data, selected }: NodeProps<Node<LLMData>>) {
+  const preview = data.prompt?.trim();
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-violet-400" : "border-slate-200"}`}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={`${HANDLE_BASE} !bg-violet-400`}
+      />
+      <div className="flex items-center gap-2 text-violet-700 text-xs font-medium uppercase tracking-wide">
+        <span>🤖</span>
+        <span>LLM</span>
+      </div>
+      <div className="mt-1 text-sm text-slate-700 break-words" style={{
+        display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+        overflow: "hidden",
+      }}>
+        {preview || <span className="text-slate-400 italic">未配置 prompt</span>}
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={`${HANDLE_BASE} !bg-violet-400`}
+      />
+    </div>
+  );
+}
+
+function OutputNodeView({ data, selected }: NodeProps<Node<OutputData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-amber-400" : "border-slate-200"}`}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={`${HANDLE_BASE} !bg-amber-400`}
+      />
+      <div className="flex items-center gap-2 text-amber-700 text-xs font-medium uppercase tracking-wide">
+        <span>📤</span>
+        <span>Output</span>
+      </div>
+      <div className="mt-1 text-sm text-slate-700 truncate font-mono">
+        {data.from || <span className="text-slate-400 italic">未配置 from</span>}
+      </div>
+    </div>
+  );
+}
+
+const NODE_TYPES = {
+  input: InputNodeView,
+  llm: LLMNodeView,
+  output: OutputNodeView,
+};
+
+// ─── 配置面板:右侧抽屉 ───────────────────────────────────────────────
+
+interface ConfigPanelProps {
+  node: EditorNode;
+  onChange: (id: string, patch: Record<string, unknown>) => void;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+}
+
+function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
+  return (
+    <aside className="w-80 bg-white border-l border-slate-200 flex flex-col shrink-0">
+      <header className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+        <h3 className="text-sm font-medium text-slate-800">
+          {node.type === "input" && "📥 Input 节点"}
+          {node.type === "llm" && "🤖 LLM 节点"}
+          {node.type === "output" && "📤 Output 节点"}
+        </h3>
+        <button
+          onClick={onClose}
+          className="text-slate-400 hover:text-slate-700 text-xl leading-none w-6 h-6 flex items-center justify-center"
+          aria-label="关闭"
+        >
+          ×
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-auto p-5 space-y-4">
+        <Field
+          label="ID(运行时输入字典 key)"
+          value={node.id}
+          disabled
+          mono
+        />
+
+        {node.type === "input" && (
+          <>
+            <TextArea
+              label="默认值(可选)"
+              hint="运行时 RunPanel 会用这个值预填输入框;LLM 引用 {{nodeId}} 时也用此值。"
+              value={(node.data as InputData).default ?? ""}
+              onChange={(v) => onChange(node.id, { default: v })}
+              rows={4}
+              placeholder="例:今天天气怎么样?"
+            />
+            <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
+              其它 LLM 节点引用方式:
+              <code className="block mt-1 text-slate-700 font-mono break-all">
+                {`{{${node.id}}}`}
+              </code>
+            </p>
+          </>
+        )}
+
+        {node.type === "llm" && (
+          <>
+            <TextArea
+              label="Prompt 模板"
+              hint="支持 {{nodeId}} 引用前序节点的输出"
+              value={(node.data as LLMData).prompt ?? ""}
+              onChange={(v) => onChange(node.id, { prompt: v })}
+              rows={6}
+              placeholder="例:用一句话回答:{{q}}"
+            />
+            <NumberInput
+              label="Max Tokens"
+              hint="推理模型建议 ≥ 2048(留出思考空间)"
+              value={(node.data as LLMData).maxTokens ?? 2048}
+              onChange={(v) => onChange(node.id, { maxTokens: v })}
+            />
+          </>
+        )}
+
+        {node.type === "output" && (
+          <Field
+            label="From(模板引用)"
+            hint="例:{{ai}} — 引用 LLM 节点的输出"
+            value={(node.data as OutputData).from ?? ""}
+            onChange={(v) => onChange(node.id, { from: v })}
+            placeholder="{{ai}}"
+            mono
+          />
+        )}
+      </div>
+
+      <footer className="px-5 py-3 border-t border-slate-200">
+        <button
+          onClick={() => onDelete(node.id)}
+          className="text-xs text-slate-500 hover:text-red-600"
+        >
+          删除节点
+        </button>
+      </footer>
+    </aside>
+  );
+}
+
+// ─── 表单组件 ────────────────────────────────────────────────────────
+
+function Field({
+  label, value, onChange, disabled, placeholder, hint, mono,
+}: {
+  label: string;
+  value: string;
+  onChange?: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  hint?: string;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange?.(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+        className={`w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-100 disabled:text-slate-500 ${mono ? "font-mono" : ""}`}
+      />
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+function TextArea({
+  label, value, onChange, rows = 4, placeholder, hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  rows?: number;
+  placeholder?: string;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
+      />
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+function NumberInput({
+  label, value, onChange, hint,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value) || 0)}
+        className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-400"
+      />
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+// ─── 保存状态徽章 ────────────────────────────────────────────────────
+
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+function SaveStatus({ status }: { status: SaveState }) {
+  const text =
+    status === "idle" ? "" :
+    status === "saving" ? "保存中…" :
+    status === "saved" ? "✓ 已保存" :
+    "保存失败";
+  const cls = status === "error" ? "text-red-600" : "text-slate-400";
+  return <span className={`text-xs ${cls} min-w-[64px] text-right tabular-nums`}>{text}</span>;
+}
+
+// ─── 主 Editor ────────────────────────────────────────────────────────
+
+function EditorInner() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+
+  const [name, setName] = useState("加载中…");
+  const [nodes, setNodes, onNodesChange] = useNodesState<EditorNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveState>("idle");
+  const [showRun, setShowRun] = useState<boolean>(false);
+
+  const loadedRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+
+  // 加载工作流
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    api
+      .getWorkflow(id)
+      .then(({ workflow }) => {
+        if (cancelled) return;
+        setName(workflow.name);
+        setNodes(
+          workflow.nodes.map<EditorNode>((n) => ({
+            id: n.id,
+            type: n.type,
+            position: n.position,
+            data: n.data as InputData | LLMData | OutputData,
+          })),
+        );
+        setEdges(
+          workflow.edges.map<Edge>((e) => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            markerEnd: { type: MarkerType.ArrowClosed },
+          })),
+        );
+        loadedRef.current = true;
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        if (e instanceof ApiError && e.status === 401) {
+          navigate("/x9f3a/login", { replace: true });
+        } else {
+          setLoadError(e instanceof Error ? e.message : "加载失败");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, navigate, setNodes, setEdges]);
+
+  // 保存(实际请求)
+  const save = useCallback(async () => {
+    if (!id || !loadedRef.current) return;
+    setSaveStatus("saving");
+    try {
+      const wf: Partial<WorkflowDef> = {
+        name,
+        nodes: nodes.map<NodeDef>((n) => ({
+          id: n.id,
+          type: n.type as NodeDef["type"],
+          position: n.position,
+          data: (n.data ?? {}) as Record<string, unknown>,
+        })),
+        edges: edges.map<EdgeDef>((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+        })),
+      };
+      await api.updateWorkflow(id, wf);
+      setSaveStatus("saved");
+      window.setTimeout(() => {
+        setSaveStatus((s) => (s === "saved" ? "idle" : s));
+      }, 1500);
+    } catch {
+      setSaveStatus("error");
+    }
+  }, [id, name, nodes, edges]);
+
+  // Debounced 自动保存
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      void save();
+    }, 1500);
+    return () => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, [name, nodes, edges, save]);
+
+  // 添加节点
+  const addNode = useCallback(
+    (type: "input" | "llm" | "output") => {
+      const newId = (
+        type === "input" ? "in_" :
+        type === "llm" ? "ai_" :
+        "out_"
+      ) + crypto.randomUUID().slice(0, 6);
+      const offset = nodes.length * 40;
+      const baseData =
+        type === "input" ? {} :
+        type === "llm" ? { prompt: "", maxTokens: 2048 } :
+        { from: "" };
+      setNodes((ns) => [
+        ...ns,
+        {
+          id: newId,
+          type,
+          position: { x: 120 + offset, y: 120 + offset },
+          data: baseData,
+        } as EditorNode,
+      ]);
+    },
+    [nodes.length, setNodes],
+  );
+
+  // 连线
+  const onConnect = useCallback(
+    (params: Connection) => {
+      setEdges((es) =>
+        addEdge(
+          {
+            ...params,
+            id: `e_${params.source}_${params.target}_${Date.now().toString(36).slice(-4)}`,
+            markerEnd: { type: MarkerType.ArrowClosed },
+          },
+          es,
+        ),
+      );
+    },
+    [setEdges],
+  );
+
+  // 修改节点 data
+  const updateNodeData = useCallback(
+    (nodeId: string, patch: Record<string, unknown>) => {
+      setNodes((ns) =>
+        ns.map((n) =>
+          n.id === nodeId
+            ? ({ ...n, data: { ...n.data, ...patch } } as EditorNode)
+            : n,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  // 删除节点
+  const deleteNode = useCallback(
+    (nodeId: string) => {
+      if (!window.confirm("确认删除这个节点?连接也会一起删。")) return;
+      setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+      setEdges((es) =>
+        es.filter((e) => e.source !== nodeId && e.target !== nodeId),
+      );
+      setSelectedId(null);
+    },
+    [setNodes, setEdges],
+  );
+
+  const selectedNode = useMemo<EditorNode | null>(
+    () => nodes.find((n) => n.id === selectedId) ?? null,
+    [nodes, selectedId],
+  );
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center space-y-3">
+          <p className="text-sm text-red-600">{loadError}</p>
+          <button
+            onClick={() => navigate("/x9f3a")}
+            className="text-sm text-slate-600 underline"
+          >
+            ← 回到列表
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-slate-50">
+      {/* Top bar */}
+      <header className="bg-white border-b border-slate-200 shrink-0">
+        <div className="px-4 py-2.5 flex items-center gap-3">
+          <button
+            onClick={() => navigate("/x9f3a")}
+            className="text-xs text-slate-500 hover:text-slate-800 px-2"
+          >
+            ← 列表
+          </button>
+          <div className="h-5 w-px bg-slate-200" />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="text-sm font-medium text-slate-800 bg-transparent border-0 border-b border-transparent hover:border-slate-300 focus:border-slate-400 focus:outline-none px-1 -mx-1 min-w-[200px] max-w-[400px]"
+            placeholder="工作流名"
+          />
+          <div className="flex-1" />
+          <button
+            onClick={() => setShowRun((v) => !v)}
+            className={`text-xs font-medium px-3 py-1 rounded-md border transition-colors ${
+              showRun
+                ? "bg-slate-800 text-white border-slate-800"
+                : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+            }`}
+          >
+            ▶ 运行
+          </button>
+          <div className="h-5 w-px bg-slate-200" />
+          <SaveStatus status={saveStatus} />
+          <div className="h-5 w-px bg-slate-200" />
+          <span className="text-xs text-slate-400">添加</span>
+          <button
+            onClick={() => addNode("input")}
+            className="text-xs bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-2.5 py-1 rounded-md border border-emerald-200 transition-colors"
+          >
+            📥 Input
+          </button>
+          <button
+            onClick={() => addNode("llm")}
+            className="text-xs bg-violet-50 text-violet-700 hover:bg-violet-100 px-2.5 py-1 rounded-md border border-violet-200 transition-colors"
+          >
+            🤖 LLM
+          </button>
+          <button
+            onClick={() => addNode("output")}
+            className="text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 px-2.5 py-1 rounded-md border border-amber-200 transition-colors"
+          >
+            📤 Output
+          </button>
+        </div>
+      </header>
+
+      {/* Canvas + Config Panel */}
+      <div className="flex-1 flex min-h-0">
+        <div className="flex-1 min-w-0">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={NODE_TYPES}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={(_, node) => setSelectedId(node.id)}
+            onPaneClick={() => setSelectedId(null)}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+          >
+            <Background gap={16} />
+            <Controls />
+          </ReactFlow>
+        </div>
+        {selectedNode && (
+          <ConfigPanel
+            node={selectedNode}
+            onChange={updateNodeData}
+            onClose={() => setSelectedId(null)}
+            onDelete={deleteNode}
+          />
+        )}
+      </div>
+
+      {/* 运行抽屉 — 浮在画布底部 */}
+      {showRun && id && (
+        <RunPanel
+          workflowId={id}
+          nodes={nodes.map((n) => ({
+            id: n.id,
+            type: n.type as NodeDef["type"],
+            position: n.position,
+            data: (n.data ?? {}) as Record<string, unknown>,
+          }))}
+          onClose={() => setShowRun(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function Editor() {
+  return (
+    <ReactFlowProvider>
+      <EditorInner />
+    </ReactFlowProvider>
+  );
+}
