@@ -206,6 +206,91 @@ async function buildLLMContent(
   return [{ type: "text", text }, ...fileBlocks];
 }
 
+// ─── MiniMax API helpers ────────────────────────────────────────────
+
+const MiniMax_BASE = "https://api.minimaxi.com";
+
+/** Bearer 认证 + JSON 的统一 fetch helper */
+async function MiniMaxFetch<T>(
+  env: Bindings,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const url = path.startsWith("http") ? path : `${MiniMax_BASE}${path}`;
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${env.LLM_API_KEY}`);
+  if (init.body && !headers.has("content-type") && typeof init.body === "string") {
+    headers.set("content-type", "application/json");
+  }
+  const resp = await fetch(url, { ...init, headers });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`MiniMax ${resp.status}: ${t.slice(0, 400)}`);
+  }
+  return (await resp.json()) as T;
+}
+
+/** 把我们 KV 里的文件中转上传到 MiniMax 文件管理,返回 file_id */
+async function uploadToMiniMax(
+  env: Bindings,
+  fileRef: FileRef,
+  purpose: "voice_clone" | "prompt_audio" | "t2a_async_input",
+): Promise<number> {
+  const buf = await env.FILES.get(fileRef.fileKey, "arrayBuffer");
+  if (!buf) throw new Error(`file not found: ${fileRef.fileKey}`);
+  const fd = new FormData();
+  fd.append("purpose", purpose);
+  fd.append(
+    "file",
+    new Blob([buf], { type: fileRef.contentType }),
+    fileRef.name,
+  );
+  const resp = await fetch(`${MiniMax_BASE}/v1/files/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.LLM_API_KEY}` },
+    body: fd,
+  });
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    throw new Error(`MiniMax upload ${resp.status}: ${t.slice(0, 300)}`);
+  }
+  const data = (await resp.json()) as { file?: { file_id?: number } };
+  if (!data.file?.file_id) throw new Error("MiniMax upload: no file_id");
+  return data.file.file_id;
+}
+
+/** KV 里的图片 → base64 data URL(给 i2i/i2v 用) */
+async function fileRefToDataUrl(
+  env: Bindings,
+  fileRef: FileRef,
+): Promise<string> {
+  const buf = await env.FILES.get(fileRef.fileKey, "arrayBuffer");
+  if (!buf) throw new Error(`file not found: ${fileRef.fileKey}`);
+  return `data:${fileRef.contentType};base64,${arrayBufferToBase64(buf)}`;
+}
+
+/** 通过 file_id 拿 MiniMax 上的文件下载 URL */
+async function retrieveHjbhxegFileUrl(
+  env: Bindings,
+  fileId: string | number,
+): Promise<string> {
+  const data = await MiniMaxFetch<{ file?: { download_url?: string } }>(
+    env,
+    `/v1/files/retrieve?file_id=${fileId}`,
+  );
+  if (!data.file?.download_url) throw new Error("no download_url for file");
+  return data.file.download_url;
+}
+
+/** Hex 字符串 → Uint8Array(TTS 返回 hex 解码用) */
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
 interface ExecContext {
   vars: Record<string, unknown>;
   env: Bindings;
@@ -371,6 +456,253 @@ async function* execNode(
 
       yield { type: "node_end", nodeId: node.id, output: result };
       return result;
+    }
+
+    // ─── P7 创作工具箱 ──────────────────────────────────────────────
+
+    case "t2i": {
+      const data = (node.data ?? {}) as {
+        model?: string;
+        prompt?: string;
+        aspect_ratio?: string;
+        n?: number;
+      };
+      const prompt = resolveTemplate(data.prompt ?? "", ctx.vars);
+      if (!prompt) throw new Error("t2i: prompt is required");
+      yield { type: "node_delta", nodeId: node.id, delta: "调用 MiniMax 文生图…" };
+      const resp = await MiniMaxFetch<{
+        data?: { image_urls?: string[] };
+      }>(ctx.env, "/v1/image_generation", {
+        method: "POST",
+        body: JSON.stringify({
+          model: data.model || "image-01",
+          prompt,
+          aspect_ratio: data.aspect_ratio || "1:1",
+          n: data.n || 1,
+          response_format: "url",
+        }),
+      });
+      const urls = resp.data?.image_urls ?? [];
+      const output = { kind: "image" as const, urls };
+      yield { type: "node_end", nodeId: node.id, output };
+      return output;
+    }
+
+    case "i2i": {
+      const data = (node.data ?? {}) as {
+        model?: string;
+        prompt?: string;
+        image_input?: string;
+        aspect_ratio?: string;
+        n?: number;
+      };
+      const prompt = resolveTemplate(data.prompt ?? "", ctx.vars);
+      const refId = data.image_input ?? "";
+      const ref = ctx.vars[refId];
+      if (!isFileRef(ref)) {
+        throw new Error(
+          `i2i: image_input '${refId}' is not a file (got ${typeof ref})`,
+        );
+      }
+      yield { type: "node_delta", nodeId: node.id, delta: "加载图片…" };
+      const dataUrl = await fileRefToDataUrl(ctx.env, ref);
+      yield { type: "node_delta", nodeId: node.id, delta: "\n调用图生图…" };
+      const resp = await MiniMaxFetch<{
+        data?: { image_urls?: string[] };
+      }>(ctx.env, "/v1/image_generation", {
+        method: "POST",
+        body: JSON.stringify({
+          model: data.model || "image-01",
+          prompt: prompt || "保持原图主体",
+          subject_reference: [
+            { type: "character", image_file: [dataUrl] },
+          ],
+          aspect_ratio: data.aspect_ratio || "1:1",
+          n: data.n || 1,
+          response_format: "url",
+        }),
+      });
+      const urls = resp.data?.image_urls ?? [];
+      const output = { kind: "image" as const, urls };
+      yield { type: "node_end", nodeId: node.id, output };
+      return output;
+    }
+
+    case "i2v": {
+      const data = (node.data ?? {}) as {
+        model?: string;
+        prompt?: string;
+        image_input?: string;
+        duration?: number;
+        resolution?: string;
+      };
+      const prompt = resolveTemplate(data.prompt ?? "", ctx.vars);
+      const refId = data.image_input ?? "";
+      const ref = ctx.vars[refId];
+      if (!isFileRef(ref)) {
+        throw new Error(`i2v: image_input '${refId}' is not a file`);
+      }
+      yield { type: "node_delta", nodeId: node.id, delta: "加载图片…" };
+      const dataUrl = await fileRefToDataUrl(ctx.env, ref);
+      yield { type: "node_delta", nodeId: node.id, delta: "\n提交视频任务…" };
+      const taskResp = await MiniMaxFetch<{ task_id: string }>(
+        ctx.env,
+        "/v1/video_generation",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            model: data.model || "MiniMax-Hailuo-2.3",
+            prompt,
+            first_frame_image: dataUrl,
+            duration: data.duration ?? 6,
+            resolution: data.resolution || "768P",
+          }),
+        },
+      );
+      yield {
+        type: "node_delta",
+        nodeId: node.id,
+        delta: `\ntask_id=${taskResp.task_id},轮询中…`,
+      };
+      // 轮询(每 5s 一次,最多 5min)
+      const MAX_ATTEMPTS = 60;
+      let fileId = "";
+      for (let i = 0; i < MAX_ATTEMPTS; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const q = await MiniMaxFetch<{
+          status: string;
+          file_id?: string;
+        }>(ctx.env, `/v1/query/video_generation?task_id=${taskResp.task_id}`);
+        yield {
+          type: "node_delta",
+          nodeId: node.id,
+          delta: `\n[${q.status}]`,
+        };
+        if (q.status === "Success" && q.file_id) {
+          fileId = q.file_id;
+          break;
+        }
+        if (q.status === "Fail") {
+          throw new Error("视频任务失败");
+        }
+      }
+      if (!fileId) throw new Error("视频任务超时(>5min)");
+      yield {
+        type: "node_delta",
+        nodeId: node.id,
+        delta: "\n获取下载链接…",
+      };
+      const url = await retrieveHjbhxegFileUrl(ctx.env, fileId);
+      const output = { kind: "video" as const, url };
+      yield { type: "node_end", nodeId: node.id, output };
+      return output;
+    }
+
+    case "voice_clone": {
+      const data = (node.data ?? {}) as {
+        audio_input?: string;
+        voice_id?: string;
+      };
+      const refId = data.audio_input ?? "";
+      const ref = ctx.vars[refId];
+      if (!isFileRef(ref)) {
+        throw new Error(`voice_clone: audio_input '${refId}' is not a file`);
+      }
+      yield {
+        type: "node_delta",
+        nodeId: node.id,
+        delta: "上传音频到 MiniMax…",
+      };
+      const fileId = await uploadToMiniMax(ctx.env, ref, "voice_clone");
+      yield {
+        type: "node_delta",
+        nodeId: node.id,
+        delta: `\nfile_id=${fileId},注册音色…`,
+      };
+      // voice_id 必须英文字母开头,8-256 字符
+      const voiceId =
+        (data.voice_id && data.voice_id.trim()) ||
+        `Vn${crypto.randomUUID().replace(/-/g, "").slice(0, 14)}`;
+      await MiniMaxFetch(ctx.env, "/v1/voice_clone", {
+        method: "POST",
+        body: JSON.stringify({
+          file_id: fileId,
+          voice_id: voiceId,
+        }),
+      });
+      const output = { kind: "voice_id" as const, voice_id: voiceId };
+      yield { type: "node_end", nodeId: node.id, output };
+      return output;
+    }
+
+    case "tts": {
+      const data = (node.data ?? {}) as {
+        model?: string;
+        text?: string;
+        voice_id?: string;
+        speed?: number;
+        vol?: number;
+        pitch?: number;
+      };
+      const text = resolveTemplate(data.text ?? "", ctx.vars);
+      if (!text) throw new Error("tts: text is required");
+
+      // voice_id 也可以模板引用前序 voice_clone 节点;支持
+      // {{vc1.voice_id}} 或 {{vc1}}(若直接是 voice_id 字符串)
+      let voiceId = resolveTemplate(data.voice_id ?? "", ctx.vars).trim();
+      // 如果 vars[voiceId] 是 voice_clone 输出对象,自动取 voice_id 字段
+      if (!voiceId) {
+        // 模板内直接引用了 voice_clone 节点 → ctx.vars[id] 是 { kind, voice_id }
+        const refKey = (data.voice_id ?? "").trim().replace(/^\{\{|\}\}$/g, "");
+        const v = ctx.vars[refKey];
+        if (v && typeof v === "object" && "voice_id" in v) {
+          voiceId = String((v as { voice_id: string }).voice_id);
+        }
+      }
+      if (!voiceId) {
+        throw new Error("tts: voice_id is required (系统音色 id 或克隆音色 id)");
+      }
+
+      yield {
+        type: "node_delta",
+        nodeId: node.id,
+        delta: "调用文转语音…",
+      };
+      const resp = await MiniMaxFetch<{
+        data?: { audio?: string };
+      }>(ctx.env, "/v1/t2a_v2", {
+        method: "POST",
+        body: JSON.stringify({
+          model: data.model || "speech-02-hd",
+          text,
+          voice_setting: {
+            voice_id: voiceId,
+            speed: data.speed ?? 1,
+            vol: data.vol ?? 1,
+            pitch: data.pitch ?? 0,
+          },
+          audio_setting: { format: "mp3", channel: 1 },
+        }),
+      });
+      const hex = resp.data?.audio ?? "";
+      if (!hex) throw new Error("tts: no audio in response");
+      const bytes = hexToBytes(hex);
+      const fileKey = `tts-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 6)}.mp3`;
+      await ctx.env.FILES.put(fileKey, bytes.buffer as ArrayBuffer, {
+        metadata: {
+          contentType: "audio/mpeg",
+          size: bytes.byteLength,
+          name: `tts-${Date.now()}.mp3`,
+          uploadedAt: Date.now(),
+        },
+      });
+      const output = {
+        kind: "audio" as const,
+        fileKey,
+        contentType: "audio/mpeg",
+      };
+      yield { type: "node_end", nodeId: node.id, output };
+      return output;
     }
 
     default: {

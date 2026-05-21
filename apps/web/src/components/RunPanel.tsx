@@ -21,6 +21,7 @@ type NodeStatus = "idle" | "running" | "done";
 interface NodeRunState {
   nodeType: NodeDef["type"];
   text: string;
+  output?: unknown;
   status: NodeStatus;
 }
 
@@ -130,6 +131,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                 [evt.nodeId]: {
                   nodeType: cur?.nodeType ?? "llm",
                   text: newText,
+                  output: evt.output,
                   status: "done",
                 },
               };
@@ -204,7 +206,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
               {inputNodes.map((n) => {
                 const data = (n.data ?? {}) as {
                   default?: string;
-                  kind?: "text" | "image";
+                  kind?: "text" | "image" | "audio";
                 };
                 const kind = data.kind ?? "text";
                 const v = inputs[n.id];
@@ -215,8 +217,10 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                   <div key={n.id}>
                     <label className="block text-xs font-mono text-slate-500 mb-1">
                       {n.id}
-                      {kind === "image" && (
-                        <span className="ml-1.5 text-slate-400">(🖼️ image)</span>
+                      {kind !== "text" && (
+                        <span className="ml-1.5 text-slate-400">
+                          ({kind === "image" ? "🖼️ image" : "🎵 audio"})
+                        </span>
                       )}
                     </label>
 
@@ -236,7 +240,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                       />
                     ) : (
                       <FilePicker
-                        accept="image/*"
+                        accept={kind === "image" ? "image/*" : "audio/*"}
                         value={isFileRef(v) ? v : null}
                         uploading={isUploading}
                         error={upErr}
@@ -285,11 +289,25 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                 const icon =
                   n.type === "input" ? "📥" :
                   n.type === "llm" ? "🤖" :
-                  n.type === "output" ? "📤" : "⚙️";
+                  n.type === "output" ? "📤" :
+                  n.type === "http" ? "🌐" :
+                  n.type === "code" ? "💻" :
+                  n.type === "t2i" ? "🎨" :
+                  n.type === "i2i" ? "🖌️" :
+                  n.type === "i2v" ? "🎬" :
+                  n.type === "voice_clone" ? "🎤" :
+                  n.type === "tts" ? "🔊" : "⚙️";
                 const color =
                   n.type === "input" ? "border-emerald-200 bg-emerald-50" :
                   n.type === "llm" ? "border-violet-200 bg-violet-50" :
                   n.type === "output" ? "border-amber-200 bg-amber-50" :
+                  n.type === "http" ? "border-sky-200 bg-sky-50" :
+                  n.type === "code" ? "border-slate-200 bg-slate-50" :
+                  n.type === "t2i" ? "border-fuchsia-200 bg-fuchsia-50" :
+                  n.type === "i2i" ? "border-pink-200 bg-pink-50" :
+                  n.type === "i2v" ? "border-blue-200 bg-blue-50" :
+                  n.type === "voice_clone" ? "border-teal-200 bg-teal-50" :
+                  n.type === "tts" ? "border-cyan-200 bg-cyan-50" :
                   "border-slate-200 bg-slate-50";
                 return (
                   <div
@@ -306,10 +324,7 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
                         <span className="text-green-700">✓</span>
                       )}
                     </div>
-                    <pre className="text-sm text-slate-800 whitespace-pre-wrap break-words font-sans leading-relaxed">
-                      {state.text ||
-                        (state.status === "running" ? "…" : "(空)")}
-                    </pre>
+                    <NodeOutput state={state} />
                   </div>
                 );
               })}
@@ -318,6 +333,82 @@ export default function RunPanel({ workflowId, nodes, onClose }: RunPanelProps) 
         )}
       </div>
     </div>
+  );
+}
+
+// ─── 节点输出渲染(根据 output.kind 切换 UI) ────────────────────────
+
+function NodeOutput({ state }: { state: NodeRunState }) {
+  const out = state.output;
+
+  // 1. 创作类节点输出对象 — 按 kind 渲染
+  if (out && typeof out === "object" && "kind" in out) {
+    const o = out as {
+      kind: string;
+      urls?: string[];
+      url?: string;
+      voice_id?: string;
+      fileKey?: string;
+      contentType?: string;
+    };
+    if (o.kind === "image" && o.urls && o.urls.length > 0) {
+      return (
+        <div className="grid grid-cols-2 gap-2">
+          {o.urls.map((u) => (
+            <a
+              key={u}
+              href={u}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block"
+            >
+              <img
+                src={u}
+                alt="generated"
+                className="w-full rounded border border-slate-200 hover:opacity-90 transition-opacity"
+              />
+            </a>
+          ))}
+        </div>
+      );
+    }
+    if (o.kind === "video" && o.url) {
+      return (
+        <video
+          src={o.url}
+          controls
+          className="w-full max-h-96 rounded border border-slate-200 bg-black"
+        >
+          您的浏览器不支持 video 标签
+        </video>
+      );
+    }
+    if (o.kind === "audio" && o.fileKey) {
+      return (
+        <audio
+          src={api.fileUrl(o.fileKey)}
+          controls
+          className="w-full"
+        >
+          您的浏览器不支持 audio 标签
+        </audio>
+      );
+    }
+    if (o.kind === "voice_id" && o.voice_id) {
+      return (
+        <div className="text-sm font-mono bg-white border border-slate-200 rounded px-3 py-2">
+          🎤 voice_id ={" "}
+          <code className="text-teal-700 font-bold">{o.voice_id}</code>
+        </div>
+      );
+    }
+  }
+
+  // 2. 字符串(LLM 等):流式 pre 文本
+  return (
+    <pre className="text-sm text-slate-800 whitespace-pre-wrap break-words font-sans leading-relaxed">
+      {state.text || (state.status === "running" ? "…" : "(空)")}
+    </pre>
   );
 }
 

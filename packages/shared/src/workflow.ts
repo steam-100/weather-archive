@@ -10,7 +10,13 @@ export type NodeType =
   | "http"
   | "condition"
   | "code"
-  | "output";
+  | "output"
+  // P7 创作工具箱
+  | "t2i"
+  | "i2i"
+  | "i2v"
+  | "voice_clone"
+  | "tts";
 
 /** 单个节点定义 */
 export interface NodeDef {

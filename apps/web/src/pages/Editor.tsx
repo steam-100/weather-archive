@@ -44,8 +44,8 @@ import RunPanel from "../components/RunPanel";
 type InputData = {
   label?: string;
   default?: string;
-  /** 输入类型 — text 默认;image 给 I2V/图片节点用 */
-  kind?: "text" | "image";
+  /** 输入类型 — text 默认;image 给 I2V/T2I/I2I 用;audio 给 VoiceClone 用 */
+  kind?: "text" | "image" | "audio";
 };
 type LLMData = { prompt?: string; maxTokens?: number; model?: string };
 type OutputData = { from?: string };
@@ -66,8 +66,8 @@ const HANDLE_BASE = "!border-2 !border-white !w-3 !h-3";
 
 function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
   const kind = data.kind ?? "text";
-  const icon = kind === "image" ? "🖼️" : "📥";
-  const label = kind === "image" ? "Image" : "Input";
+  const icon = kind === "image" ? "🖼️" : kind === "audio" ? "🎵" : "📥";
+  const label = kind === "image" ? "Image" : kind === "audio" ? "Audio" : "Input";
   const preview = kind === "text" ? data.default?.trim() : null;
   return (
     <div className={`${NODE_BOX} ${selected ? "border-emerald-400" : "border-slate-200"}`}>
@@ -87,7 +87,7 @@ function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
           “{preview}”
         </div>
       )}
-      {kind === "image" && (
+      {kind !== "text" && (
         <div className="mt-1 text-xs text-slate-400 italic">运行时上传</div>
       )}
       <Handle
@@ -98,6 +98,137 @@ function InputNodeView({ id, data, selected }: NodeProps<Node<InputData>>) {
     </div>
   );
 }
+
+// ─── P7 创作节点 ──────────────────────────────────────────────
+
+type T2IData = {
+  model?: string;
+  prompt?: string;
+  aspect_ratio?: string;
+  n?: number;
+};
+type I2IData = T2IData & { image_input?: string };
+type I2VData = {
+  model?: string;
+  prompt?: string;
+  image_input?: string;
+  duration?: number;
+  resolution?: string;
+};
+type VoiceCloneData = {
+  audio_input?: string;
+  voice_id?: string;
+};
+type TTSData = {
+  model?: string;
+  text?: string;
+  voice_id?: string;
+  speed?: number;
+  vol?: number;
+  pitch?: number;
+};
+
+function T2INodeView({ data, selected }: NodeProps<Node<T2IData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-fuchsia-400" : "border-slate-200"}`}>
+      <Handle type="target" position={Position.Left} className={`${HANDLE_BASE} !bg-fuchsia-400`} />
+      <div className="flex items-center gap-2 text-fuchsia-700 text-xs font-medium uppercase tracking-wide">
+        <span>🎨</span><span>T2I</span>
+      </div>
+      <div className="mt-1 text-sm text-slate-700 break-words" style={{
+        display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
+      }}>
+        {data.prompt?.trim() || <span className="text-slate-400 italic">未配 prompt</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className={`${HANDLE_BASE} !bg-fuchsia-400`} />
+    </div>
+  );
+}
+
+function I2INodeView({ data, selected }: NodeProps<Node<I2IData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-pink-400" : "border-slate-200"}`}>
+      <Handle type="target" position={Position.Left} className={`${HANDLE_BASE} !bg-pink-400`} />
+      <div className="flex items-center gap-2 text-pink-700 text-xs font-medium uppercase tracking-wide">
+        <span>🖌️</span><span>I2I</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-500 font-mono truncate">
+        img: {data.image_input || "?"}
+      </div>
+      <div className="mt-0.5 text-sm text-slate-700 truncate">
+        {data.prompt?.trim() || <span className="text-slate-400 italic">未配 prompt</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className={`${HANDLE_BASE} !bg-pink-400`} />
+    </div>
+  );
+}
+
+function I2VNodeView({ data, selected }: NodeProps<Node<I2VData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-blue-400" : "border-slate-200"}`}>
+      <Handle type="target" position={Position.Left} className={`${HANDLE_BASE} !bg-blue-400`} />
+      <div className="flex items-center gap-2 text-blue-700 text-xs font-medium uppercase tracking-wide">
+        <span>🎬</span><span>I2V</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-500 font-mono truncate">
+        img: {data.image_input || "?"} · {data.duration ?? 6}s
+      </div>
+      <div className="mt-0.5 text-sm text-slate-700 truncate">
+        {data.prompt?.trim() || <span className="text-slate-400 italic">未配 prompt</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className={`${HANDLE_BASE} !bg-blue-400`} />
+    </div>
+  );
+}
+
+function VoiceCloneNodeView({ data, selected }: NodeProps<Node<VoiceCloneData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-teal-400" : "border-slate-200"}`}>
+      <Handle type="target" position={Position.Left} className={`${HANDLE_BASE} !bg-teal-400`} />
+      <div className="flex items-center gap-2 text-teal-700 text-xs font-medium uppercase tracking-wide">
+        <span>🎤</span><span>VoiceClone</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-500 font-mono truncate">
+        audio: {data.audio_input || "?"}
+      </div>
+      <div className="mt-0.5 text-xs text-slate-700 font-mono truncate">
+        → {data.voice_id?.trim() || <span className="text-slate-400 italic">自动生成</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className={`${HANDLE_BASE} !bg-teal-400`} />
+    </div>
+  );
+}
+
+function TTSNodeView({ data, selected }: NodeProps<Node<TTSData>>) {
+  return (
+    <div className={`${NODE_BOX} ${selected ? "border-cyan-400" : "border-slate-200"}`}>
+      <Handle type="target" position={Position.Left} className={`${HANDLE_BASE} !bg-cyan-400`} />
+      <div className="flex items-center gap-2 text-cyan-700 text-xs font-medium uppercase tracking-wide">
+        <span>🔊</span><span>TTS</span>
+      </div>
+      <div className="mt-1 text-xs text-slate-500 font-mono truncate">
+        voice: {data.voice_id?.trim() || "?"}
+      </div>
+      <div className="mt-0.5 text-sm text-slate-700 truncate">
+        {data.text?.trim() || <span className="text-slate-400 italic">未配 text</span>}
+      </div>
+      <Handle type="source" position={Position.Right} className={`${HANDLE_BASE} !bg-cyan-400`} />
+    </div>
+  );
+}
+
+const NODE_TYPES = {
+  input: InputNodeView,
+  llm: LLMNodeView,
+  output: OutputNodeView,
+  http: HttpNodeView,
+  code: CodeNodeView,
+  t2i: T2INodeView,
+  i2i: I2INodeView,
+  i2v: I2VNodeView,
+  voice_clone: VoiceCloneNodeView,
+  tts: TTSNodeView,
+};
 
 function LLMNodeView({ data, selected }: NodeProps<Node<LLMData>>) {
   const preview = data.prompt?.trim();
@@ -200,14 +331,6 @@ function CodeNodeView({ data, selected }: NodeProps<Node<CodeData>>) {
   );
 }
 
-const NODE_TYPES = {
-  input: InputNodeView,
-  llm: LLMNodeView,
-  output: OutputNodeView,
-  http: HttpNodeView,
-  code: CodeNodeView,
-};
-
 // ─── 配置面板:右侧抽屉 ───────────────────────────────────────────────
 
 interface ConfigPanelProps {
@@ -227,6 +350,11 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
           {node.type === "output" && "📤 Output 节点"}
           {node.type === "http" && "🌐 HTTP 节点"}
           {node.type === "code" && "💻 Code 节点"}
+          {node.type === "t2i" && "🎨 T2I 文生图"}
+          {node.type === "i2i" && "🖌️ I2I 图生图"}
+          {node.type === "i2v" && "🎬 I2V 图生视频"}
+          {node.type === "voice_clone" && "🎤 VoiceClone 声音克隆"}
+          {node.type === "tts" && "🔊 TTS 文转语音"}
         </h3>
         <button
           onClick={onClose}
@@ -290,13 +418,13 @@ function ConfigPanel({ node, onChange, onClose, onDelete }: ConfigPanelProps) {
               rows={6}
               placeholder="例:用一句话回答:{{q}}"
             />
-            <Field
+            <ComboBox
               label="模型(可选)"
               hint="MiniMax 文本模型,留空走默认 MiniMax-M2.7"
               value={(node.data as LLMData).model ?? ""}
               onChange={(v) => onChange(node.id, { model: v })}
-              placeholder="MiniMax-M2.7-highspeed"
-              mono
+              options={MODELS.text}
+              placeholder="MiniMax-M2.7"
             />
             <NumberInput
               label="Max Tokens"
@@ -371,6 +499,199 @@ return vars.ai.toUpperCase();`}
               <br />
               ⚠️ 受 Workers 默认 10ms CPU 限制
             </p>
+          </>
+        )}
+
+        {node.type === "t2i" && (
+          <>
+            <TextArea
+              label="Prompt(文本描述)"
+              hint="支持 {{nodeId}} 引用前序节点;最长 1500 字符"
+              value={(node.data as T2IData).prompt ?? ""}
+              onChange={(v) => onChange(node.id, { prompt: v })}
+              rows={5}
+              placeholder="例:水墨画风的山间小院,春雨初霁"
+            />
+            <ComboBox
+              label="模型"
+              value={(node.data as T2IData).model ?? ""}
+              onChange={(v) => onChange(node.id, { model: v })}
+              options={MODELS.image}
+              placeholder="image-01"
+              hint="image-01 标准 / image-01-live 漫画/水彩等画风"
+            />
+            <Select
+              label="宽高比"
+              value={(node.data as T2IData).aspect_ratio ?? "1:1"}
+              onChange={(v) =>
+                onChange(node.id, { aspect_ratio: v })
+              }
+              options={["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"]}
+            />
+            <NumberInput
+              label="生成数量 (n)"
+              hint="1-9 张"
+              value={(node.data as T2IData).n ?? 1}
+              onChange={(v) =>
+                onChange(node.id, {
+                  n: Math.max(1, Math.min(9, Math.floor(v))),
+                })
+              }
+            />
+          </>
+        )}
+
+        {node.type === "i2i" && (
+          <>
+            <Field
+              label="图片输入节点 ID"
+              hint="填一个 kind=image 的 Input 节点 id(参考主体图)"
+              value={(node.data as I2IData).image_input ?? ""}
+              onChange={(v) => onChange(node.id, { image_input: v })}
+              placeholder="in_xxxxxx"
+              mono
+            />
+            <TextArea
+              label="Prompt(描述要修改的内容)"
+              hint="例:把这个人变成动漫风格"
+              value={(node.data as I2IData).prompt ?? ""}
+              onChange={(v) => onChange(node.id, { prompt: v })}
+              rows={4}
+              placeholder="动漫风格、保持神态"
+            />
+            <ComboBox
+              label="模型"
+              value={(node.data as I2IData).model ?? ""}
+              onChange={(v) => onChange(node.id, { model: v })}
+              options={MODELS.image}
+              placeholder="image-01"
+            />
+            <Select
+              label="宽高比"
+              value={(node.data as I2IData).aspect_ratio ?? "1:1"}
+              onChange={(v) => onChange(node.id, { aspect_ratio: v })}
+              options={["1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"]}
+            />
+          </>
+        )}
+
+        {node.type === "i2v" && (
+          <>
+            <Field
+              label="图片输入节点 ID"
+              hint="填一个 kind=image 的 Input 节点 id(作为首帧)"
+              value={(node.data as I2VData).image_input ?? ""}
+              onChange={(v) => onChange(node.id, { image_input: v })}
+              placeholder="in_xxxxxx"
+              mono
+            />
+            <TextArea
+              label="动作 / 镜头描述 (Prompt)"
+              hint="支持 {{nodeId}};最长 2000 字符"
+              value={(node.data as I2VData).prompt ?? ""}
+              onChange={(v) => onChange(node.id, { prompt: v })}
+              rows={4}
+              placeholder="例:她笑着挥手,镜头缓缓推近"
+            />
+            <ComboBox
+              label="模型"
+              value={(node.data as I2VData).model ?? ""}
+              onChange={(v) => onChange(node.id, { model: v })}
+              options={MODELS.video}
+              placeholder="MiniMax-Hailuo-2.3"
+              hint="2.3 标准 / 2.3-Fast 快速 / I2V-01-Director 运镜版"
+            />
+            <Select
+              label="时长(秒)"
+              value={String((node.data as I2VData).duration ?? 6)}
+              onChange={(v) => onChange(node.id, { duration: Number(v) })}
+              options={["6", "10"]}
+            />
+            <Select
+              label="分辨率"
+              value={(node.data as I2VData).resolution ?? "768P"}
+              onChange={(v) => onChange(node.id, { resolution: v })}
+              options={["512P", "720P", "768P", "1080P"]}
+            />
+            <p className="text-xs text-slate-500 leading-relaxed bg-amber-50 border border-amber-200 rounded-md p-3">
+              ⏰ 异步任务,通常需 30 秒~3 分钟。运行时会推送状态。
+            </p>
+          </>
+        )}
+
+        {node.type === "voice_clone" && (
+          <>
+            <Field
+              label="音频输入节点 ID"
+              hint="填一个 kind=audio 的 Input 节点 id(10秒~5分钟)"
+              value={(node.data as VoiceCloneData).audio_input ?? ""}
+              onChange={(v) =>
+                onChange(node.id, { audio_input: v })
+              }
+              placeholder="in_xxxxxx"
+              mono
+            />
+            <Field
+              label="自定义音色 ID(可选)"
+              hint="字母开头,8-256 字符;留空自动生成"
+              value={(node.data as VoiceCloneData).voice_id ?? ""}
+              onChange={(v) => onChange(node.id, { voice_id: v })}
+              placeholder="VnMyMomVoice"
+              mono
+            />
+            <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-md p-3">
+              输出 voice_id 字符串。后续 TTS 节点的「音色 ID」字段填{" "}
+              <code className="font-mono">{`{{${node.id}.voice_id}}`}</code>{" "}
+              即可用克隆音色合成语音。
+              <br />⚠️ 7 天内未调用,音色会被 MiniMax 清理。
+            </p>
+          </>
+        )}
+
+        {node.type === "tts" && (
+          <>
+            <TextArea
+              label="文本(要合成的话)"
+              hint="支持 {{nodeId}};最长 10000 字符"
+              value={(node.data as TTSData).text ?? ""}
+              onChange={(v) => onChange(node.id, { text: v })}
+              rows={4}
+              placeholder="今天是妈妈的生日,生日快乐!"
+            />
+            <Field
+              label="音色 ID"
+              hint="系统音色名 / VoiceClone 输出。例:{{vc1.voice_id}}"
+              value={(node.data as TTSData).voice_id ?? ""}
+              onChange={(v) => onChange(node.id, { voice_id: v })}
+              placeholder="male-qn-qingse / VnXxx"
+              mono
+            />
+            <ComboBox
+              label="模型"
+              value={(node.data as TTSData).model ?? ""}
+              onChange={(v) => onChange(node.id, { model: v })}
+              options={MODELS.speech}
+              placeholder="speech-02-hd"
+              hint="hd 高保真 / turbo 快速"
+            />
+            <NumberInput
+              label="语速 (speed)"
+              hint="0.5-2.0,默认 1.0"
+              value={(node.data as TTSData).speed ?? 1}
+              onChange={(v) => onChange(node.id, { speed: v })}
+            />
+            <NumberInput
+              label="音量 (vol)"
+              hint="0.1-10,默认 1"
+              value={(node.data as TTSData).vol ?? 1}
+              onChange={(v) => onChange(node.id, { vol: v })}
+            />
+            <NumberInput
+              label="音调 (pitch)"
+              hint="-12 ~ 12,默认 0"
+              value={(node.data as TTSData).pitch ?? 0}
+              onChange={(v) => onChange(node.id, { pitch: v })}
+            />
           </>
         )}
       </div>
@@ -491,6 +812,74 @@ function Select({
   );
 }
 
+/**
+ * 带 datalist 的 input — 老大可以下拉选,也能手敲新值
+ * 用于模型名字段(预置 MiniMax 模型清单 + 兼容未来新模型)
+ */
+function ComboBox({
+  label, value, onChange, options, hint, placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  hint?: string;
+  placeholder?: string;
+}) {
+  const listId = `dl-${label.replace(/\s/g, "_")}-${Math.random().toString(36).slice(2, 8)}`;
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        list={listId}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-400"
+      />
+      <datalist id={listId}>
+        {options.map((opt) => (
+          <option key={opt} value={opt} />
+        ))}
+      </datalist>
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  );
+}
+
+// 模型清单(MiniMax 官方文档清单)— 各节点用对应集
+const MODELS = {
+  text: [
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
+  ],
+  image: ["image-01", "image-01-live"],
+  video: [
+    "MiniMax-Hailuo-2.3",
+    "MiniMax-Hailuo-2.3-Fast",
+    "MiniMax-Hailuo-02",
+    "I2V-01-Director",
+    "I2V-01-live",
+    "I2V-01",
+  ],
+  speech: [
+    "speech-2.8-hd",
+    "speech-2.8-turbo",
+    "speech-2.6-hd",
+    "speech-2.6-turbo",
+    "speech-02-hd",
+    "speech-02-turbo",
+    "speech-01-hd",
+    "speech-01-turbo",
+  ],
+};
+
 // ─── 保存状态徽章 ────────────────────────────────────────────────────
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -609,13 +998,30 @@ function EditorInner() {
 
   // 添加节点
   const addNode = useCallback(
-    (type: "input" | "llm" | "output" | "http" | "code") => {
+    (
+      type:
+        | "input"
+        | "llm"
+        | "output"
+        | "http"
+        | "code"
+        | "t2i"
+        | "i2i"
+        | "i2v"
+        | "voice_clone"
+        | "tts",
+    ) => {
       const idPrefix =
         type === "input" ? "in_" :
         type === "llm" ? "ai_" :
         type === "output" ? "out_" :
         type === "http" ? "http_" :
-        "code_";
+        type === "code" ? "code_" :
+        type === "t2i" ? "t2i_" :
+        type === "i2i" ? "i2i_" :
+        type === "i2v" ? "i2v_" :
+        type === "voice_clone" ? "vc_" :
+        "tts_";
       const newId = idPrefix + crypto.randomUUID().slice(0, 6);
       const offset = nodes.length * 40;
       const baseData: Record<string, unknown> =
@@ -623,7 +1029,12 @@ function EditorInner() {
         type === "llm" ? { prompt: "", maxTokens: 2048 } :
         type === "output" ? { from: "" } :
         type === "http" ? { url: "", method: "GET" } :
-        { code: "" };
+        type === "code" ? { code: "" } :
+        type === "t2i" ? { prompt: "", model: "image-01", aspect_ratio: "1:1", n: 1 } :
+        type === "i2i" ? { prompt: "", image_input: "", model: "image-01", aspect_ratio: "1:1" } :
+        type === "i2v" ? { prompt: "", image_input: "", model: "MiniMax-Hailuo-2.3", duration: 6, resolution: "768P" } :
+        type === "voice_clone" ? { audio_input: "", voice_id: "" } :
+        { text: "", voice_id: "", model: "speech-02-hd", speed: 1, vol: 1, pitch: 0 };
       setNodes((ns) => [
         ...ns,
         {
@@ -764,6 +1175,38 @@ function EditorInner() {
             className="text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 px-2.5 py-1 rounded-md border border-slate-300 transition-colors"
           >
             💻 Code
+          </button>
+          <div className="h-5 w-px bg-slate-200" />
+          <span className="text-xs text-slate-400">创作</span>
+          <button
+            onClick={() => addNode("t2i")}
+            className="text-xs bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100 px-2.5 py-1 rounded-md border border-fuchsia-200 transition-colors"
+          >
+            🎨 T2I
+          </button>
+          <button
+            onClick={() => addNode("i2i")}
+            className="text-xs bg-pink-50 text-pink-700 hover:bg-pink-100 px-2.5 py-1 rounded-md border border-pink-200 transition-colors"
+          >
+            🖌️ I2I
+          </button>
+          <button
+            onClick={() => addNode("i2v")}
+            className="text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 px-2.5 py-1 rounded-md border border-blue-200 transition-colors"
+          >
+            🎬 I2V
+          </button>
+          <button
+            onClick={() => addNode("voice_clone")}
+            className="text-xs bg-teal-50 text-teal-700 hover:bg-teal-100 px-2.5 py-1 rounded-md border border-teal-200 transition-colors"
+          >
+            🎤 Clone
+          </button>
+          <button
+            onClick={() => addNode("tts")}
+            className="text-xs bg-cyan-50 text-cyan-700 hover:bg-cyan-100 px-2.5 py-1 rounded-md border border-cyan-200 transition-colors"
+          >
+            🔊 TTS
           </button>
         </div>
       </header>
