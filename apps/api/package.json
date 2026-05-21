@@ -1,0 +1,22 @@
+{
+  "name": "@app/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "secret:put": "echo 'Run: wrangler secret put <NAME>'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.10",
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@app/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "wrangler": "^3.85.0",
+    "typescript": "^5.6.3"
+  }
+}

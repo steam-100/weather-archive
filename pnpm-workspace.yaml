@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# pnpm 11+ : 显式声明哪些子依赖可以跑 install 脚本
+# esbuild — vite 必须
+# workerd — wrangler 必须 (Cloudflare Workers runtime)
+# sharp   — 没用上,不放行
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+

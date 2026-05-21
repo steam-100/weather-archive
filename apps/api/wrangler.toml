@@ -1,0 +1,25 @@
+# Cloudflare Workers 配置
+# 注意:不在此处填写任何 secret(API key / 口令 hash)
+# Secrets 通过 `wrangler secret put <NAME>` 交互式写入,不入仓库
+
+name = "weather-archive-api"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV namespace — 工作流定义存储
+# 本地 dev:miniflare 自动模拟,id 字符串无所谓
+# 生产:已绑定老大账号下的真实 KV namespace
+[[kv_namespaces]]
+binding = "KV"
+id = "00ddcebaf41d4204a4d39dae4eda8789"
+
+# 公开变量(非敏感)
+[vars]
+LLM_BASE_URL = "https://api.minimaxi.com/anthropic"
+LLM_DEFAULT_MODEL = "MiniMax-M2.7"
+
+# 以下通过 secret 注入(命令在 DEV.md):
+#   wrangler secret put LLM_API_KEY
+#   wrangler secret put PASSCODE_HASH
+#   wrangler secret put JWT_SECRET
